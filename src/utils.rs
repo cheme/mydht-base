@@ -1,8 +1,13 @@
 
+extern crate time;
 use rustc_serialize::{Encoder,Encodable,Decoder,Decodable};
 use std::ops::Deref;
 use std::str::FromStr;
 use std::net::SocketAddr;
+use std::net::SocketAddrV4;
+use std::net::SocketAddrV6;
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 use num::bigint::{BigUint,RandBigInt};
 use std::env;
 use std::path::{Path,PathBuf};
@@ -15,9 +20,16 @@ use std::sync::{Arc,Mutex,Condvar};
 use std::fmt::{Formatter,Debug};
 use std::fmt::Error as FmtError;
 use std::time::Duration;
+use self::time::Timespec;
+use keyval::KeyVal;
+use keyval::FileKeyVal;
+use keyval::Attachment;
+use keyval::SettableAttachment;
 
 #[cfg(test)]
 use std::thread;
+
+pub static NULL_TIMESPEC : Timespec = Timespec{ sec : 0, nsec : 0};
 
 pub fn is_in_tmp_dir(f : &Path) -> bool {
 //  Path::new(os::tmpdir().to_string()).is_ancestor_of(f)
@@ -290,7 +302,7 @@ pub fn clone_wait_one_result_ifneq_timeout_ms<V : Clone + Send + Eq> (ores : &On
       match ores.1.wait_timeout(guard, Duration::from_millis(to as u64)) {
         
         Ok(mut r) => {
-          if r.1.timed_out() {
+          if !r.1.timed_out() {
             if (r.0).1 {
               (r.0).1  = false;
               let res = (r.0).0.clone();
@@ -332,7 +344,7 @@ pub fn clone_wait_one_result_timeout_ms<V : Clone + Send> (ores : &OneResult<V>,
       loop {
       match ores.1.wait_timeout(guard, Duration::from_millis(to as u64)) {
         Ok(mut r) => {
-          if r.1.timed_out() {
+          if !r.1.timed_out() {
             if (r.0).1 {
               (r.0).1  = false;
               let res = (r.0).0.clone();
@@ -348,7 +360,8 @@ pub fn clone_wait_one_result_timeout_ms<V : Clone + Send> (ores : &OneResult<V>,
             break;
           }
         }
-        Err(_) => {error!("Condvar issue for return res"); break}, // TODO what to do??? panic?
+        Err(_) => {
+          error!("Condvar issue for return res"); break}, // TODO what to do??? panic?
       }
       };
       ret
@@ -365,9 +378,11 @@ pub fn test_oneresult () {
   let or = new_oneresult("testons");
 
   assert!("testons" == one_result_val_clone (&or).unwrap());
+
   change_one_result(&or, "testons2");
   assert!("testons2" == one_result_val_clone (&or).unwrap());
   assert!(None == clone_wait_one_result_timeout_ms(&or,Some("testons3"),500));
+
   ret_one_result(&or, "testons2");
   assert!(None == clone_wait_one_result_timeout_ms(&or,Some("testons3"),500));
   assert!("testons2" == one_result_val_clone (&or).unwrap());
@@ -392,5 +407,140 @@ pub fn test_oneresult () {
   assert!( Some("unlock") == clone_wait_one_result(&or,None));
 
 }
+
+
+pub fn sa4(a: Ipv4Addr, p: u16) -> SocketAddr {
+ SocketAddr::V4(SocketAddrV4::new(a, p))
+}
+pub fn sa6(a: Ipv6Addr, p: u16) -> SocketAddr {
+ SocketAddr::V6(SocketAddrV6::new(a, p, 0, 0))
+}
+
+
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct ArcKV<KV : KeyVal> (pub Arc<KV>);
+
+impl<KV : KeyVal> Encodable for ArcKV<KV> {
+  fn encode<S:Encoder> (&self, s: &mut S) -> Result<(), S::Error> {
+    // default to local without att
+    self.0.encode_kv(s, true, false)
+  }
+}
+
+impl<KV : KeyVal> Decodable for ArcKV<KV> {
+  fn decode<D:Decoder> (d : &mut D) -> Result<ArcKV<KV>, D::Error> {
+    // default to local without att
+    Self::decode_kv(d, true, false)
+  }
+}
+/*
+impl<KV : KeyVal> AsKeyValIf for ArcKV<KV> 
+  {
+  type KV = KV;
+  type BP = ();
+  fn as_keyval_if(& self) -> & Self::KV {
+    &(*self.0)
+  }
+  fn build_from_keyval(_ : (), kv : Self::KV) -> Self {
+    ArcKV::new(kv)
+  }
+  fn decode_bef<D:Decoder> (d : &mut D, is_local : bool, with_att : bool) -> Result<Self::BP, D::Error> {Ok(())}
+}
+*/
+impl<KV : KeyVal> ArcKV<KV> {
+  #[inline]
+  pub fn new(kv : KV) -> ArcKV<KV> {
+    ArcKV(Arc::new(kv))
+  }
+}
+
+impl<V : KeyVal> Deref for ArcKV<V> {
+  type Target = V;
+  fn deref<'a> (&'a self) -> &'a V {
+    &self.0
+  }
+}
+
+
+
+impl<KV : KeyVal> KeyVal for ArcKV<KV> {
+  type Key = <KV as KeyVal>::Key;
+  #[inline]
+  fn get_key(&self) -> <KV as KeyVal>::Key {
+    self.0.get_key()
+  }/*
+  #[inline]
+  fn get_key_ref<'a>(&'a self) -> &'a <KV as KeyVal>::Key {
+    self.0.get_key_ref()
+  }*/
+  #[inline]
+  fn get_attachment(&self) -> Option<&Attachment> {
+    self.0.get_attachment() 
+  }
+  #[inline]
+  fn encode_kv<S:Encoder> (&self, s: &mut S, is_local : bool, with_att : bool) -> Result<(), S::Error> {
+    self.0.encode_kv(s, is_local, with_att)
+  }
+  #[inline]
+  fn decode_kv<D:Decoder> (d : &mut D, is_local : bool, with_att : bool) -> Result<Self, D::Error> {
+    <KV as KeyVal>::decode_kv(d, is_local, with_att).map(|r|ArcKV::new(r))
+  }
+}
+
+impl<KV : KeyVal> SettableAttachment for ArcKV<KV> {
+  #[inline]
+  /// set attachment, 
+  fn set_attachment(& mut self, fi:&Attachment) -> bool {
+    // only solution : make unique and then new Arc : functional style : costy : a copy of every
+    // keyval with an attachment not serialized in it.
+    // Othewhise need a kvmut used for protomess only
+    // currently no use of weak pointer over our Arc, so when used after receiving a message
+    // (unique arc) no clone may occurs (see fn doc).
+    let kv = Arc::make_mut(&mut self.0);
+    kv.set_attachment(fi)
+  }
+
+}
+impl<V : FileKeyVal> FileKeyVal for ArcKV<V> {
+  #[inline]
+  fn name(&self) -> String {
+    self.0.name()
+  }
+
+  #[inline]
+  fn from_path(tmpf : PathBuf) -> Option<ArcKV<V>> {
+    <V as FileKeyVal>::from_path(tmpf).map(|v|ArcKV::new(v))
+  }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct TimeSpecExt(pub Timespec);
+impl Deref for TimeSpecExt {
+  type Target = Timespec;
+  #[inline]
+  fn deref<'a> (&'a self) -> &'a Timespec {
+    &self.0
+  }
+}
+impl Encodable for TimeSpecExt {
+  fn encode<S:Encoder> (&self, s: &mut S) -> Result<(), S::Error> {
+    let pair = (self.0.sec,self.0.nsec);
+    pair.encode(s)
+  }
+}
+
+impl Decodable for TimeSpecExt {
+  fn decode<D:Decoder> (d : &mut D) -> Result<TimeSpecExt, D::Error> {
+    let tisp : Result<(i64,i32), D::Error>= Decodable::decode(d);
+    tisp.map(|(sec,nsec)| TimeSpecExt(Timespec{sec:sec,nsec:nsec}))
+  }
+}
+/*pub fn ref_and_then<T, U, F : FnOnce(&T) -> Option<U>>(o : &Option<T>, f : F) -> Option<U> {
+  match o {
+    &Some(ref x) => f(x),
+    &None => None,
+  }
+}*/
 
 

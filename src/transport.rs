@@ -1,3 +1,8 @@
+#[cfg(feature="mio-impl")]
+extern crate coroutine;
+
+
+
 use std::io::Result as IoResult;
 use std::io::Write;
 use std::io::Read;
@@ -10,7 +15,8 @@ use std::fmt::Debug;
 use std::net::{SocketAddr};
 use std::net::Shutdown;
 use std::net::{TcpStream};
-
+#[cfg(feature="mio-impl")]
+use self::coroutine::Handle as CoHandle;
 
 
 pub trait Address : Sync + Send + Clone + Debug + 'static {}
@@ -53,12 +59,20 @@ pub trait Transport : Send + Sync + 'static {
   fn disconnect(&self, &Self::Address) -> IoResult<bool> {Ok(false)}
 }
 
-#[cfg(not(feature="mio-impl"))]
+#[cfg(feature="mio-impl")]
 pub enum SpawnRecMode {
   Local,
   LocalSpawn, // local with spawn
   Threaded,
   Coroutine,
+}
+
+#[cfg(not(feature="mio-impl"))]
+pub enum SpawnRecMode {
+  Local,
+  LocalSpawn, // local with spawn
+  Threaded,
+  Coroutine, // TODO remove (issue with pattern matching)
 }
 
 

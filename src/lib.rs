@@ -7,7 +7,16 @@ extern crate num;
 extern crate rand;
 extern crate bit_vec;
 extern crate byteorder;
-
+/*
+#[macro_export]
+/// static buffer
+macro_rules! static_buff {
+  ($bname:ident, $bname_size:ident, $bsize:expr, $btype:ty, $bdefval:expr ) => (
+    const $bname_size : usize = $bsize;
+    static $bname : &'static mut [$btype; $bsize] = &mut [$bdefval; $bsize];
+  )
+}
+*/
 
 #[macro_export]
 /// a try which use a wrapping type

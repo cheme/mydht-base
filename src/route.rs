@@ -14,6 +14,13 @@ use std::marker::PhantomData;
 /// peerinfo without access to server and client info
 pub type PeerInfoBase<P, SI, CI> = (Arc<P>,PeerState,(Option<SI>, Option<CI>));
 
+#[inline]
+pub fn is_peerinfo_online<P, SI, CI>(b : &PeerInfoBase<P, SI, CI>) -> bool {
+  match b {
+    &(_,PeerState::Online(_),_) => true,
+    _ => false,
+  }
+}
 
 pub struct RouteFromBase<A:Address,P:Peer<Address = A>,V:KeyVal,T:Transport<Address = A>,CI,SI,RB : RouteBase<A,P,V,T,CI,SI>> (pub RB,pub PhantomData<(A,P,V,T,CI,SI)>);
 

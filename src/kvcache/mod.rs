@@ -43,6 +43,15 @@ pub trait KVCache<K, V> : Sized {
   }
 
   fn len_c (& self) -> usize;
+  fn len_where_c<F> (& self, f : &F) -> usize where F : Fn(&V) -> bool {
+    self.fold_c(0, |nb, (_,v)|{
+      if f(v) {
+        nb + 1
+      } else {
+        nb
+      }
+    })
+  }
 //  fn it_next<'b>(&'b mut Self::I) -> Option<(&'b K,&'b V)>;
   //fn iter_c<'a, I>(&'a self) -> I where I : Debug;
   // TODO see if we can remove that
@@ -61,9 +70,14 @@ pub trait KVCache<K, V> : Sized {
   /// Note that without enough value in cache (need at least two time more value than expected nb
   /// result). And result is feed through a costy iteration.
   /// 
-  fn next_random_values<'a>(&'a mut self, queried_nb : usize) -> Vec<&'a V> where K : 'a {
+  fn next_random_values<'a,F>(&'a mut self, queried_nb : usize, f : Option<&F>) -> Vec<&'a V> where K : 'a,
+  F : Fn(&V) -> bool,
+  {
     
-    let l = self.len_c();
+    let l = match f {
+      Some(fil) => self.len_where_c(fil),
+      None => self.len_c(),
+    };
     let randrat = l * 2 / 3;
     let nb = if queried_nb > randrat {
       randrat
@@ -90,7 +104,7 @@ pub trait KVCache<K, V> : Sized {
     };
     loop {
       thread_rng().fill_bytes(&mut v);
-      match inner_cache_bv_rand(self,&v, xess, nb) {
+      match inner_cache_bv_rand(self,&v, xess, nb, f) {
         Some(res) => return res,
         None => {
      warn!("Rerolling random (not enough results)");
@@ -101,7 +115,7 @@ pub trait KVCache<K, V> : Sized {
 }
 
 #[inline]
-fn inner_cache_bv_rand<'a,K, V, C : KVCache<K,V>> (c : &'a C, buf : &[u8], xess : usize, nb : usize) -> Option<Vec<&'a V>>  where K : 'a {
+fn inner_cache_bv_rand<'a,K, V, C : KVCache<K,V>, F : Fn(&V) -> bool> (c : &'a C, buf : &[u8], xess : usize, nb : usize, filtfn : Option<&F>) -> Option<Vec<&'a V>>  where K : 'a {
  
   let filter = {
     let mut r = BitVec::from_bytes(buf);
@@ -118,13 +132,17 @@ fn inner_cache_bv_rand<'a,K, V, C : KVCache<K,V>> (c : &'a C, buf : &[u8], xess 
      None
    } else {
      Some(c.strict_fold_c((xess,0,Vec::with_capacity(nb)), |(i, mut tot, mut r), (_,v)|{
-       if filter[i] {
-         if tot < nb && tot % ratio == 0 {
-           r.push(v);
+       if filtfn.is_none() || (filtfn.unwrap())(v) {
+         if filter[i] {
+           if tot < nb && tot % ratio == 0 {
+             r.push(v);
+           }
+           tot = tot + 1;
          }
-         tot = tot + 1;
+         (i + 1, tot, r)
+       } else {
+         (i, tot, r)
        }
-       (i + 1, tot, r)
      }).2)
    }
 }
@@ -221,25 +239,32 @@ impl<K: Hash + Eq, V> KVCache<K,V> for HashMap<K,V> {
 #[test]
 /// test of default random
 fn test_rand_generic () {
-  let mut m : HashMap<usize, ()> = HashMap::new();
-  assert!(0 == m.next_random_values(1).len());
-  m.insert(1,());
-  assert!(0 == m.next_random_values(1).len());
-  m.insert(2,());
-  assert!(1 == m.next_random_values(1).len());
-  assert!(1 == m.next_random_values(2).len());
-  m.insert(3,());
-  assert!(1 == m.next_random_values(1).len());
-  assert!(2 == m.next_random_values(2).len());
+  let t_none : Option <&(fn(&bool) -> bool)> = None;
+  let filter_in = |b : &bool| *b;
+  let filter = Some(&filter_in);
+  let mut m : HashMap<usize, bool> = HashMap::new();
+  assert!(0 == m.next_random_values(1,t_none).len());
+  m.insert(1,true);
+  assert!(0 == m.next_random_values(1,t_none).len());
+  m.insert(2,true);
+  assert!(1 == m.next_random_values(1,t_none).len());
+  assert!(1 == m.next_random_values(2,t_none).len());
+  m.insert(11,false);
+  m.insert(12,false);
+  assert!(2 == m.next_random_values(2,t_none).len());
+  assert!(1 == m.next_random_values(2,filter).len());
+  m.insert(3,true);
+  assert!(1 == m.next_random_values(1,filter).len());
+  assert!(2 == m.next_random_values(2,filter).len());
   // fill exactly 8 val
   for i in 4..9 {
-    m.insert(i,());
+    m.insert(i,true);
   }
-  assert!(8 == m.len());
-  assert!(1 == m.next_random_values(1).len());
-  assert!(5 == m.next_random_values(8).len());
-  m.insert(9,());
-  assert!(1 == m.next_random_values(1).len());
-  assert!(6 == m.next_random_values(8).len());
+  assert!(10 == m.len());
+  assert!(1 == m.next_random_values(1,filter).len());
+  assert!(5 == m.next_random_values(8,filter).len());
+  m.insert(9,true);
+  assert!(1 == m.next_random_values(1,filter).len());
+  assert!(6 == m.next_random_values(8,filter).len());
 }
 

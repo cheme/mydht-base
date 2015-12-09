@@ -63,7 +63,8 @@ pub trait RouteBase<A:Address,P:Peer<Address = A>,V:KeyVal,T:Transport<Address =
   /// Possible Serialize on quit
   fn commit_store(&mut self) -> bool;
 
-  /// Return a random peer from route, the peer must be online
+  /// Return random peers from route, the peer must be online.
+  /// Return less than expected number when not enough peers 
   fn next_random_peers(&mut self, usize) -> Vec<Arc<P>>;
 }
 

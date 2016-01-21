@@ -56,6 +56,7 @@ pub enum ProtoMessage<'a,P : Peer + 'a, V : KeyVal + 'a> {
   STOREVALUEATT(Option<QueryID>, Option<DistantEncAtt<&'a V>>),
   FINDNODE(QueryMsg<P>, P::Key),
   FINDVALUE(QueryMsg<P>, V::Key),
+  PROXY(Option<usize>), // No content as message decode will be done by reading following payload
 }
 
 }
@@ -136,7 +137,8 @@ pub fn write_attachment<W : Write> (w : &mut W, a : Option<&Attachment>) -> MDHT
       debug!("frsiz{:?}",lfrsize);
       debug!("busize{:?}",BUFF_SIZE);
       // TODO less headers??
-      tryfor!(BOErr,w.write_u64::<LittleEndian>(fsize));
+      //tryfor!(BOErr,w.write_u64::<LittleEndian>(fsize));
+      try!(w.write_u64::<LittleEndian>(fsize));
       //try!(w.write_u32::<LittleEndian>(nbframe.to_u32().unwrap()));
       //try!(w.write_u32::<LittleEndian>(BUFF_SIZE.to_u32().unwrap()));
       //try!(w.write_u32::<LittleEndian>(lfrsize.to_u32().unwrap()));
@@ -164,7 +166,8 @@ pub fn read_attachment(s : &mut Read)-> MDHTResult<Attachment> {
   //let nbframe = try!(s.read_u32::<LittleEndian>()).to_usize().unwrap();
   //let bsize   = try!(s.read_u32::<LittleEndian>()).to_usize().unwrap();
   //let lfrsize = try!(s.read_u32::<LittleEndian>()).to_usize().unwrap();
-  let fsize = tryfor!(BOErr,s.read_u64::<LittleEndian>());
+  //let fsize = tryfor!(BOErr,s.read_u64::<LittleEndian>());
+  let fsize = try!(s.read_u64::<LittleEndian>());
   let nbframe = (fsize / (BUFF_SIZE).to_u64().unwrap()).to_usize().unwrap();
   let lfrsize = (fsize - (BUFF_SIZE.to_u64().unwrap() * nbframe.to_u64().unwrap())).to_usize().unwrap();
  
@@ -194,13 +197,13 @@ pub fn read_attachment(s : &mut Read)-> MDHTResult<Attachment> {
 
 const BUFF_SIZE : usize = 10000; // use for attachment send/receive -- 21888 seems to be maxsize for tcp read at least TODO parameterized this one (trait constant?)
 
-pub struct BOErr(pub BOError);
-
+//pub struct BOErr(pub BOError);
+/*
 impl From<BOErr> for Error {
   #[inline]
   fn from(e : BOErr) -> Error {
     Error(e.0.description().to_string(), ErrorKind::ExternalLib, Some(Box::new(e.0)))
   }
-}
+}*/
 
 

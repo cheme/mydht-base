@@ -1,16 +1,29 @@
 #[cfg(feature="mio-impl")]
 extern crate coroutine;
 
-
-
+use std::ops::Deref;
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use std::str::FromStr;
 use std::io::Result as IoResult;
+use std::result::Result as StdResult;
 use std::io::Write;
 use std::io::Read;
+use std::io::{
+  Error as IoError,
+  ErrorKind as IoErrorKind,
+};
 use time::Duration;
 
-use mydhtresult::Result;
+use mydhtresult::{
+  Result,
+  ErrorKind,
+  Error,
+};
+use std::error::Error as ErrorTrait;
+
 use std::thread::JoinHandle;
 
+use rustc_serialize::{Encodable, Decodable, Encoder, Decoder};
 use std::fmt::Debug;
 use std::net::{SocketAddr};
 use std::net::Shutdown;
@@ -18,13 +31,104 @@ use std::net::{TcpStream};
 #[cfg(feature="mio-impl")]
 use self::coroutine::Handle as CoHandle;
 
+#[cfg(test)]
+use std::io::Cursor;
+#[cfg(test)]
+use std::net::{
+  SocketAddrV4,
+  Ipv4Addr,
+  SocketAddrV6,
+  Ipv6Addr,
+};
 
-pub trait Address : Sync + Send + Clone + Debug + 'static {}
+pub trait Address : Sync + Send + Clone + Debug + Encodable + Decodable + 'static {
+/*  /// for tunnel (otherwhise rust serialize is use on peer)
+  fn write_as_bytes<W:Write> (&self, &mut W) -> IoResult<()>;
+  /// for tunnel (otherwhise rust serialize is use on peer)
+  fn read_as_bytes<R:Read> (&mut R) -> IoResult<Self>;*/
+}
+/*
+impl<A : Sync + Send + Clone + Debug + 'static> Address for A {
+  fn write_as_bytes<W:Write> (&self, w : &mut W) -> Result<()> {
+    panic!("tt");
+  }
+  fn read_as_bytes<R:Read> (r : &mut R) -> Result<Self> {
+    panic!("tt");
+  }
+}
+*/
 
 
-impl Address for SocketAddr {}
+impl Encodable for SerSocketAddr {
+  fn encode<S:Encoder> (&self, s: &mut S) -> StdResult<(), S::Error> {
+    s.emit_str(&self.0.to_string()[..])
+  }
+}
+
+impl Decodable for SerSocketAddr {
+  fn decode<D:Decoder> (d : &mut D) -> StdResult<SerSocketAddr, D::Error> {
+    d.read_str().map(|ad| {
+      SerSocketAddr(FromStr::from_str(&ad[..]).unwrap())
+    })
+  }
+}
+
+impl Deref for SerSocketAddr {
+  type Target = SocketAddr;
+  fn deref<'a> (&'a self) -> &'a SocketAddr {
+    &self.0
+  }
+}
 
 
+/// serializable socket address
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct SerSocketAddr(pub SocketAddr);
+
+
+impl Address for SerSocketAddr { 
+ /* // TODO replace to to_byte
+  fn write_as_bytes<W:Write> (&self, w : &mut W) -> IoResult<()> {
+    let sstr = self.0.to_string();
+    let stri = sstr.as_bytes();
+    let fsize = stri.len() as u64; 
+
+    //tryfor!(BOErr,w.write_u64::<LittleEndian>(fsize));
+    try!(w.write_u64::<LittleEndian>(fsize));
+    try!(w.write_all(stri));
+    Ok(())
+  }
+  // TODO replace to from_byte
+  /// for tunnel (otherwhise rust serialize is use on peer)
+  fn read_as_bytes<R:Read> (r : &mut R) -> IoResult<Self> {
+
+    let fsize = try!(r.read_u64::<LittleEndian>());
+    let mut addbyte = vec![0;fsize as usize];
+    try!(r.read(&mut addbyte[..]));
+    let adds = String::from_utf8_lossy(&addbyte[..]);
+    match SocketAddr::from_str(&adds) {
+      Ok(add) => Ok(SerSocketAddr(add)),
+      Err(e) => 
+        Err(IoError::new(IoErrorKind::InvalidData, e)),
+    }
+  }*/
+}
+
+/*
+#[test]
+fn test_addr_socket () {
+  let s1 = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127,0,0,1),69914));
+  let s2 = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::new(127,0,0,1,127,0,0,1),69914,0,0));
+  let mut cursor = Cursor::new(Vec::new());
+  s1.write_as_bytes(&mut cursor);
+  cursor.set_position(0);
+  assert!(SocketAddr::read_as_bytes (&mut cursor).unwrap() == s1);
+  cursor.set_position(0);
+  s2.write_as_bytes(&mut cursor);
+  cursor.set_position(0);
+  assert!(SocketAddr::read_as_bytes (&mut cursor).unwrap() == s2);
+}
+*/
 
 /// transport must be sync (in running type), it implies that it is badly named as transport must
 /// only contain enough information to instantiate needed component (even not sync) in the start

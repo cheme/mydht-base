@@ -71,10 +71,7 @@ pub enum QueryMode {
   /// After a few hop switch to asynch (from AProxy). Therefore AProxy originator may not be the
   /// query originator.
   AMix(u8),
-  // TODO new meeting point mode (involve asking (getting or setting meeting point as kv request) for meeting point and storing them in query). meeting point being only proxy making node id translation (possible n meeting point) -> kind of designing random routes. (meeting points do not read content just change dest/origin (no local search (content may be unreadable for the meeting points))). meeting point may communicate their routing table and when sending we creat a n route (each hop decriptable only by reader(and with a reply route (not same as query (and same thing preencoded)) for final dest)). -> in fact predesigned route with encoded/decoded each hop and if a hop do not know next, reply fail (may need some routing table publish to lower those fails). PB from size of frame you get nbhop... -> Random size message filler...??? so you probabilistic know your nb hop without knowing.
 }
-
-
 #[derive(RustcDecodable,RustcEncodable,Debug,Clone)]
 // TODO serialize without Paths : Deserialize to dummy path
 /// When KeyVal use an attachment we should use specific transport strategy.
@@ -121,22 +118,24 @@ impl<P : Peer> QueryModeMsg<P> {
     }
    
   }
-    /// Get peers to reply to if the mode allows it.
-    pub fn get_rec_node(&self) -> Option<&Arc<P>> {
+    /// Get peers to reply to
+    pub fn get_rec_node(&self) -> &Arc<P> {
         match self {
-            &QueryModeMsg::AProxy (ref n, _) => Some (n),
-            &QueryModeMsg::Asynch (ref n, _) => Some (n),
-            &QueryModeMsg::AMix (_,ref n, _) => Some (n),
+            &QueryModeMsg::AProxy (ref n, _) => n,
+            &QueryModeMsg::Asynch (ref n, _) => n,
+            &QueryModeMsg::AMix (_,ref n, _) => n,
         }
     }
     /// Get queryid if the mode use managed query.
-    pub fn get_qid (&self) -> Option<&QueryID> {
+    pub fn get_qid (&self) -> &QueryID {
         match self {
-            &QueryModeMsg::AProxy (_, ref q) => Some (q),
-            &QueryModeMsg::Asynch (_, ref q) => Some (q),
-            &QueryModeMsg::AMix (_,_, ref q) => Some (q),
+            &QueryModeMsg::AProxy (_, ref q) => q,
+            &QueryModeMsg::Asynch (_, ref q) => q,
+            &QueryModeMsg::AMix (_,_, ref q) => q,
         }
     }
+
+
     pub fn get_qid_clone (&self) -> QueryID {
         match self {
             &QueryModeMsg::AProxy (_, ref q) => q.clone(),
@@ -144,11 +143,11 @@ impl<P : Peer> QueryModeMsg<P> {
             &QueryModeMsg::AMix (_,_, ref q) => q.clone(),
         }
     }
-    pub fn to_qid (self) -> Option<QueryID> {
+    pub fn to_qid (self) -> QueryID {
         match self {
-            QueryModeMsg::AProxy (_, q) => Some (q),
-            QueryModeMsg::Asynch (_, q) => Some (q),
-            QueryModeMsg::AMix (_,_, q) => Some (q),
+            QueryModeMsg::AProxy (_, q) => q,
+            QueryModeMsg::Asynch (_, q) => q,
+            QueryModeMsg::AMix (_,_, q) => q,
         }
     }
  

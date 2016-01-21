@@ -74,29 +74,6 @@ fn random_uuid(hash_size : usize) -> BigUint {
 }
 
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct SocketAddrExt(pub SocketAddr);
-
-impl Encodable for SocketAddrExt {
-  fn encode<S:Encoder> (&self, s: &mut S) -> Result<(), S::Error> {
-    s.emit_str(&self.0.to_string()[..])
-  }
-}
-
-impl Decodable for SocketAddrExt {
-  fn decode<D:Decoder> (d : &mut D) -> Result<SocketAddrExt, D::Error> {
-    d.read_str().map(|ad| {
-      SocketAddrExt(FromStr::from_str(&ad[..]).unwrap())
-    })
-  }
-}
-impl Deref for SocketAddrExt {
-  type Target = SocketAddr;
-  fn deref<'a> (&'a self) -> &'a SocketAddr {
-    &self.0
-  }
-}
-
 
 /// serializable option type for transient fields in struct : like option but do not serialize and
 /// deserialize to none.

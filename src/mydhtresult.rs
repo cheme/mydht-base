@@ -2,17 +2,65 @@
 use std::fmt::Result as FmtResult;
 use std::fmt::{Display,Formatter};
 use std::error::Error as ErrorTrait;
-use std::io::Error as IOError;
+use std::io::{
+  Error as IoError,
+  ErrorKind as IoErrorKind,
+};
+
 use std::sync::PoisonError;
 use std::sync::mpsc::SendError;
 use std::sync::mpsc::RecvError;
 
 use std::result::Result as StdResult;
+use bincode::rustc_serialize::EncodingError as BincError;
+use bincode::rustc_serialize::DecodingError as BindError;
+use byteorder::Error as BOError;
+/*use std::net::parser::AddrParseError as AddrError;
+
+impl From<AddrError> for Error {
+  #[inline]
+  fn from(e : AddrError) -> Error {
+    Error(e.description().to_string(), ErrorKind::ExternalLib, Some(Box::new(e)))
+  }
+}*/
+
+impl Into<IoError> for Error {
+  #[inline]
+  fn into(self) -> IoError {
+//    IoError::new(e.description().to_string(), ErrorKind::ExternalLib, Some(Box::new(e)))
+    IoError::new(IoErrorKind::Other, self.to_string()) // not that good
+  }
+}
+pub trait Into<T> {
+    fn into(self) -> T;
+}
+
+impl From<BOError> for Error {
+  #[inline]
+  fn from(e : BOError) -> Error {
+    Error(e.description().to_string(), ErrorKind::ExternalLib, Some(Box::new(e)))
+  }
+}
+
+
+impl From<BincError> for Error {
+  #[inline]
+  fn from(e : BincError) -> Error {
+    Error(e.description().to_string(), ErrorKind::EncodingError, Some(Box::new(e)))
+  }
+}
+impl From<BindError> for Error {
+  #[inline]
+  fn from(e : BindError) -> Error {
+    Error(e.description().to_string(), ErrorKind::DecodingError, Some(Box::new(e)))
+  }
+}
+
 
 #[derive(Debug)]
 pub struct Error(pub String, pub ErrorKind, pub Option<Box<ErrorTrait>>);
 
-/*pub fn from_io_error<T>(r : StdResult<T, IOError>) -> Result<T> {
+/*pub fn from_io_error<T>(r : StdResult<T, IoError>) -> Result<T> {
   r.map_err(|e| From::from(e))
 }*/
 
@@ -42,9 +90,9 @@ impl ErrorTrait for Error {
   }
 }
 
-impl From<IOError> for Error {
+impl From<IoError> for Error {
   #[inline]
-  fn from(e : IOError) -> Error {
+  fn from(e : IoError) -> Error {
     Error(e.description().to_string(), ErrorKind::IOError, Some(Box::new(e)))
   }
 }

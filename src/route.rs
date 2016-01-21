@@ -141,16 +141,16 @@ pub mod byte_rep {
     }
   }
 
-impl<'a> DHTElemBytes<'a> for String {
-  // return ing Vec<u8> is stupid but it is for testing
-  type Bytes = Vec<u8>;
-  fn bytes_ref_keb (&'a self) -> Self::Bytes {
-    self.as_bytes().to_vec()
+  impl<'a> DHTElemBytes<'a> for String {
+    // return ing Vec<u8> is stupid but it is for testing
+    type Bytes = Vec<u8>;
+    fn bytes_ref_keb (&'a self) -> Self::Bytes {
+      self.as_bytes().to_vec()
+    }
+    fn kelem_eq_keb(&self, other : &Self) -> bool {
+      self == other
+    }
   }
-  fn kelem_eq_keb(&self, other : &Self) -> bool {
-    self == other
-  }
-}
 
 
   impl DHTElem for BitVec {
@@ -163,10 +163,6 @@ impl<'a> DHTElemBytes<'a> for String {
     self == other
     }
   }
-
-
-
-
 
   impl<'a> DHTElemBytes<'a> for Vec<u8> {
     // return ing Vec<u8> is stupid but it is for testing

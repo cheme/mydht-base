@@ -90,14 +90,20 @@ impl<K,V, C : KVCache<K,V>> KVCache<K, V> for RandCache<K,V,C> {
       C::new()
     )
   }
+  fn distrib_ratio(&self) -> (usize,usize) {
+    (self.numratio, self.denratio)
+  }
+
   fn next_random_values<'a,F>(&'a mut self, queried_nb : usize, filter : Option<&F>) -> Vec<&'a V> where K : 'a, F : Fn(&V) -> bool {
     let l = match filter {
       Some(fil) => self.len_where_c(fil),
       None => self.len_c(),
     };
  
-    let randrat = l * self.numratio / self.denratio;
+    let rat = self.distrib_ratio();
+    let randrat = l * rat.0 / rat.1;
     let nb = if queried_nb > randrat {
+      //println!("applying randrat2 : l {}", l);
       randrat
     } else {
       queried_nb
@@ -137,6 +143,7 @@ impl<K,V, C : KVCache<K,V>> KVCache<K, V> for RandCache<K,V,C> {
         Some(res) => return res,
         None => {
           warn!("Rerolling random (not enough results)");
+          warn!("Rerolling random (not enough results)");
         },
       }
     };
@@ -175,6 +182,7 @@ fn test_rand_generic_ca () {
   m.cache.insert(9,true);
   assert!(1 == m.next_random_values(1,filter).len());
   assert!(6 == m.next_random_values(8,filter).len());
+  //assert!(false);
 }
 
 

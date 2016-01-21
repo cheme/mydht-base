@@ -52,6 +52,9 @@ pub trait DHTRules : Sync + Send + 'static {
   /// seemingly remaining number of hop equal to max number of hop mode may not be send by the
   /// query originator
   fn nbhop_dec (&self) -> u8;
+  /// function defining tunnel length of tunnel querymode
+  fn tunnel_length(&self, QueryPriority) -> u8;
+
 
 
 

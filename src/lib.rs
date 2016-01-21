@@ -1,4 +1,5 @@
 
+#![feature(associated_consts)]
 
 #[macro_use] extern crate log;
 extern crate rustc_serialize;
@@ -7,6 +8,7 @@ extern crate num;
 extern crate rand;
 extern crate bit_vec;
 extern crate byteorder;
+extern crate bincode;
 /*
 #[macro_export]
 /// static buffer
@@ -245,4 +247,6 @@ pub mod query;
 pub mod procs;
 pub mod rules;
 pub mod route;
+pub mod tunnel;
+pub mod bytes_wr;
 

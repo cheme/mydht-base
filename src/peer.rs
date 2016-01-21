@@ -1,6 +1,3 @@
-use std::io::Write;
-use std::io::Read;
-use std::io::Result as IoResult;
 use transport::Address;
 use keyval::KeyVal;
 use utils::{
@@ -8,7 +5,14 @@ use utils::{
   OneResult,
   unlock_one_result,
 };
+use std::io::{
+  Write,
+  Read,
+  Result as IoResult,
+};
+use std::fmt::Debug;
 
+use rustc_serialize::{Encodable, Decodable};
 
 
 /// A peer is a special keyval with an attached address over the network
@@ -17,10 +21,11 @@ pub trait Peer : KeyVal + 'static {
   type Shadow : Shadow;
  // TODO rename to get_address or get_address_clone, here name is realy bad
   // + see if a ref returned would not be best (same limitation as get_key for composing types in
-  // multi transport)
+  // multi transport) + TODO alternative with ref to address for some cases
   fn to_address (&self) -> Self::Address;
   /// instantiate a new shadower for this peer (shadower wrap over write stream and got a lifetime
-  /// of the connection). // TODO enum instead of bool!!
+  /// of the connection). // TODO enum instead of bool!! (currently true for write mode false for
+  /// read only)
   fn get_shadower (&self, write : bool) -> Self::Shadow;
 //  fn to_address (&self) -> SocketAddr;
 }
@@ -31,7 +36,7 @@ pub trait Shadow : Send + 'static {
   /// type of shadow to apply (most of the time this will be () or bool but some use case may
   /// require 
   /// multiple shadowing scheme, and therefore probably an enum type).
-  type ShadowMode;
+  type ShadowMode : Clone + Eq + Encodable + Decodable + Debug;
   /// get the header required for a shadow scheme : for instance the shadowmode representation and
   /// the salt. The action also make the shadow iter method to use the right state (internal state
   /// for shadow mode). TODO refactor to directly write in a Writer??
@@ -40,7 +45,8 @@ pub trait Shadow : Send + 'static {
   /// over write (see utils :: send_msg)
   fn shadow_iter<W : Write> (&mut self, &[u8], &mut W, &Self::ShadowMode) -> IoResult<usize>;
   /// flush at the end of message writing (useless to add content : reader could not read it),
-  /// usefull to emptied some block cyper buffer.
+  /// usefull to emptied some block cyper buffer, it does not flush the writer which should be
+  /// flush manually (allow using multiple shadower in messages such as tunnel).
   fn shadow_flush<W : Write> (&mut self, w : &mut W, &Self::ShadowMode) -> IoResult<()>;
   /// read header getting mode and initializing internal information
   fn read_shadow_header<R : Read> (&mut self, &mut R) -> IoResult<Self::ShadowMode>;
@@ -50,7 +56,69 @@ pub trait Shadow : Send + 'static {
   fn default_message_mode () -> Self::ShadowMode;
   /// auth related messages (PING  and PONG)
   fn default_auth_mode () -> Self::ShadowMode;
+  /// mode for tunnel headers or short messages
+  fn default_head_mode () -> Self::ShadowMode;
+ 
+  /// base for shadow iter using a symetric key (first param), mainly use in reply for tunnel
+  /// message
+  fn shadow_iter_sim<W : Write> (&mut self, &[u8], &[u8], &mut W, &Self::ShadowMode) -> IoResult<usize>;
+
+  fn read_shadow_iter_sim<R : Read> (&mut self, &[u8], &mut R, buf : &mut [u8], &Self::ShadowMode) -> IoResult<usize>;
+  fn shadow_sim_flush<W : Write> (&mut self, &mut W, &Self::ShadowMode) -> IoResult<()>;
+  /// create a simkey TODO change to asref u8 in result, mainly use in reply for tunnel
+  /// message
+  fn shadow_simkey(&mut self, &Self::ShadowMode) -> Vec<u8>;
+ 
 }
+
+/// a struct for reading once with shadow
+pub struct ShadowReadOnce<'a, S : 'a + Shadow, R : 'a + Read>(&'a mut S,Option<<S as Shadow>::ShadowMode>, &'a mut R);
+
+impl<'a, S : 'a + Shadow, R : 'a + Read> ShadowReadOnce<'a,S,R> {
+  pub fn new(s : &'a mut S, r : &'a mut R) -> Self {
+    ShadowReadOnce(s, None, r)
+  }
+
+}
+
+impl<'a, S : 'a + Shadow, R : 'a + Read> Read for ShadowReadOnce<'a,S,R> {
+  fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
+    if self.1.is_none() {
+      let sm = try!(self.0.read_shadow_header(self.2));
+      self.1 = Some(sm);
+    }
+    self.0.read_shadow_iter(&mut self.2, buf, self.1.as_ref().unwrap())
+  }
+}
+
+/// a struct for writing once with shadow (in a write abstraction)
+/// Flush does not lead to a new header write (for this please create a new shadowWriteOnce).
+/// Flush does not flush the inner writer but only the shadower (to flush writer please first end 
+pub struct ShadowWriteOnce<'a, S : 'a + Shadow, W : 'a + Write>(&'a mut S, &'a <S as Shadow>::ShadowMode, &'a mut W, bool);
+
+impl<'a, S : 'a + Shadow, W : 'a + Write> ShadowWriteOnce<'a,S,W> {
+  pub fn new(s : &'a mut S, r : &'a mut W, sm : &'a <S as Shadow>::ShadowMode) -> Self {
+    ShadowWriteOnce(s, sm, r, false)
+  }
+
+}
+
+impl<'a, S : 'a + Shadow, W : 'a + Write> Write for ShadowWriteOnce<'a,S,W> {
+
+  fn write(&mut self, cont: &[u8]) -> IoResult<usize> {
+    if !self.3 {
+      try!(self.0.shadow_header(&mut self.2, &self.1));
+      self.3 = true;
+    }
+    self.0.shadow_iter(cont, &mut self.2, &self.1)
+  }
+ 
+  /// flush does not flush the inner writer
+  fn flush(&mut self) -> IoResult<()> {
+    self.0.shadow_flush(&mut self.2, &self.1)
+  }
+}
+
 
 pub struct NoShadow;
 
@@ -66,7 +134,7 @@ impl Shadow for NoShadow {
   }
   #[inline]
   fn shadow_flush<W : Write> (&mut self, w : &mut W, _ : &Self::ShadowMode) -> IoResult<()> {
-    w.flush()
+    Ok(())
   }
   #[inline]
   fn read_shadow_header<R : Read> (&mut self, _ : &mut R) -> IoResult<Self::ShadowMode> {
@@ -85,6 +153,28 @@ impl Shadow for NoShadow {
   fn default_auth_mode () -> Self::ShadowMode {
     ()
   }
+  #[inline]
+  fn default_head_mode () -> Self::ShadowMode {
+    ()
+  }
+ 
+  #[inline]
+  fn shadow_iter_sim<W : Write> (&mut self, _ : &[u8], m : &[u8], w : &mut W, _ : &Self::ShadowMode) -> IoResult<usize> {
+    w.write(m)
+  }
+  #[inline]
+  fn read_shadow_iter_sim<R : Read> (&mut self, _ : &[u8], r : &mut R, buf : &mut [u8], _ : &Self::ShadowMode) -> IoResult<usize> {
+    r.read(buf)
+  }
+ 
+  #[inline]
+  fn shadow_sim_flush<W : Write> (&mut self, w : &mut W, _ : &Self::ShadowMode) -> IoResult<()> {
+    w.flush()
+  }
+  fn shadow_simkey(&mut self, _ : &Self::ShadowMode) -> Vec<u8> {
+    Vec::new()
+  }
+ 
 }
 
 

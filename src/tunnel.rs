@@ -21,6 +21,7 @@ use peer::{
   Shadow,
   ShadowReadOnce,
   ShadowWriteOnce,
+  ShadowWriteOnceL,
 };
 use std::io::{
   Write,
@@ -399,47 +400,73 @@ impl<'a, P : Peer, W : 'a + Write> Write for TunnelWriter<'a, P, W> {
   fn write(&mut self, cont: &[u8]) -> Result<usize> {
     // first frame : header
     if !self.hasheader {
-      try!(bin_encode(&self.mode, &mut self.sender, SizeLimit::Infinite).map_err(|e|BincErr(e)));
-      match &self.mode {
-        &TunnelMode::NoTunnel => {
-            self.hasheader = true;
-        },
+      // pattern match here to avoid self lifetime constraint
+      let &mut TunnelWriter {
+            buf: _,
+            bufix: _,
+            hasheader: _,
+            addrs: ref mut addrs,
+            shads: ref mut shads,
+            mode: ref mode,
+            shacont : ref mut shacont,
+            sender: ref mut sender,
+            error: ref mut error,
+            hopids: ref mut hopids,
+      } = self;
+
+      try!(bin_encode(mode, sender, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+
+      match &self.mode.clone() {
+        &TunnelMode::NoTunnel => (),
         &TunnelMode::PublicTunnel(_,ref headmode,ref contentmode) => {
+
+          let mut i = 0;
           // write proxy infos skip first (origin)
-          for i in 1 .. self.addrs.len() {
-            let mut sha = self.shads.get_mut(i).unwrap();
-            let tunid = self.hopids.get(i).unwrap();
-            let npi = if i == self.addrs.len() - 1 {
+          let init : Result<(usize,&mut Write)> = Ok((i,sender));
+          try!(shads.iter_mut().fold(init,|pr, sha| match pr {
+         e@Err(_) => e,
+         Ok((i,w)) => {
+         if i != 0 {
+            let tunid = hopids[i];
+            let npi = if i == addrs.len() - 1 {
               None
             } else {
-            let add = self.addrs.get(i + 1).unwrap();
+            let add = addrs.get(i + 1).unwrap();
               Some(add)
             };
 //            add.write_as_bytes(&mut shw).unwrap();
             let tpi : TunnelProxyInfoSend<P> = TunnelProxyInfoSend {
               next_proxy_peer : npi,
-              tunnel_id : tunid.clone(), // tunnelId change for every hop
-              tunnel_id_failure : self.error, // if set that is a failure
+              tunnel_id : tunid.clone(), // tunnelId change for every hop TODO see if ref in proxy send
+              tunnel_id_failure : error.clone(), // if set that is a failure TODO see if ref in proxy send
             };
 
-            let mut shw = ShadowWriteOnce::new(sha,self.sender,headmode);
+            let mut shw = if i == 1 {
+              ShadowWriteOnceL::new(sha,w,headmode,true) // use of dirty option unwrap
+            } else {
+              ShadowWriteOnceL::new(sha,w,headmode,false)
+            };
+
             try!(bin_encode(&tpi, &mut shw, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+
             // write content shad head if needed (encoded)
             if npi.is_none() {
-              match &mut self.shacont {
+              match shacont {
                 &mut Some(ref mut s) => { 
-                  try!(s.shadow_header(&mut shw, contentmode));
+                  try!(s.shadow_header(&mut shw, contentmode)); // shadow header is encrypted
                   try!(shw.flush());
                 },
                 _ => (),
               }
-//              let mut sha = self.shads.get_mut(self.addrs.len() - 1).unwrap();
             } else {
               try!(shw.flush());
             }
-          }
-
-          self.hasheader = true;
+//            panic!("lifetime issue shw is linked to 410");
+// TODO uncoment           oshw = Some(&mut shw);
+        }
+        Ok((i + 1, w))
+        },
+          }));
         },
         &TunnelMode::Tunnel(_,layercontent,ref headmode,ref contentmode) => {
           if layercontent { panic!("unimplemented layered content") };
@@ -451,6 +478,10 @@ impl<'a, P : Peer, W : 'a + Write> Write for TunnelWriter<'a, P, W> {
           panic!("unimplemented tunnelmode");
         },
       }
+
+
+
+      self.hasheader = true;
     }
 
     // actual write
@@ -574,19 +605,10 @@ impl<'a, P : Peer, R : 'a + Read> Read for TunnelReader<'a,P,R> {
   }
 }
 
-// iterate on tunnelproxy up to emptied (return Result<usize>)
-
-
-// test from writer to reader directly (one tunnel length)
-
-
-// test from writer to reader through proxy (one tunnel length) : rem previous test??
-
-
-// test multiple tunnel
 
 
 // test multiple tunnel (one hop) between two thread (similar to real world)
 
 // all test in extra with rsa-peer : by mydht-base-test with RSaPeer
+
 

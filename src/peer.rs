@@ -96,12 +96,22 @@ impl<'a, S : 'a + Shadow, R : 'a + Read> Read for ShadowReadOnce<'a,S,R> {
 /// Flush does not flush the inner writer but only the shadower (to flush writer please first end 
 pub struct ShadowWriteOnce<'a, S : 'a + Shadow, W : 'a + Write>(&'a mut S, &'a <S as Shadow>::ShadowMode, &'a mut W, bool);
 
+
+/// layerable shadowrite once (fat pointer on reader and recursive flush up to terminal reader). //
+/// last bool is to tell if it is first (reader is not flush on first)
+pub struct ShadowWriteOnceL<'a, S : 'a + Shadow>(&'a mut S, &'a <S as Shadow>::ShadowMode, &'a mut Write, bool,bool);
+
 impl<'a, S : 'a + Shadow, W : 'a + Write> ShadowWriteOnce<'a,S,W> {
   pub fn new(s : &'a mut S, r : &'a mut W, sm : &'a <S as Shadow>::ShadowMode) -> Self {
     ShadowWriteOnce(s, sm, r, false)
   }
-
 }
+impl<'a, S : 'a + Shadow> ShadowWriteOnceL<'a,S> {
+  pub fn new(s : &'a mut S, r : &'a mut Write, sm : &'a <S as Shadow>::ShadowMode, is_first : bool) -> Self {
+    ShadowWriteOnceL(s, sm, r, false, is_first)
+  }
+}
+
 
 impl<'a, S : 'a + Shadow, W : 'a + Write> Write for ShadowWriteOnce<'a,S,W> {
 
@@ -118,6 +128,28 @@ impl<'a, S : 'a + Shadow, W : 'a + Write> Write for ShadowWriteOnce<'a,S,W> {
     self.0.shadow_flush(&mut self.2, &self.1)
   }
 }
+
+impl<'a, S : 'a + Shadow> Write for ShadowWriteOnceL<'a,S> {
+
+  fn write(&mut self, cont: &[u8]) -> IoResult<usize> {
+    if !self.3 {
+      try!(self.0.shadow_header(&mut self.2, &self.1));
+      self.3 = true;
+    }
+    self.0.shadow_iter(cont, &mut self.2, &self.1)
+  }
+ 
+  /// flush does not flush the first inner writer
+  fn flush(&mut self) -> IoResult<()> {
+    try!(self.0.shadow_flush(&mut self.2, &self.1));
+    if !self.4 {
+      self.2.flush()
+    } else {
+      Ok(())
+    }
+  }
+}
+
 
 
 pub struct NoShadow;

@@ -50,14 +50,57 @@ pub trait BytesWR<W : Write, R : Read> {
   fn end_write(&mut self, &mut W) -> Result<()>;
 }
 
-pub struct BRWImpl<W : Write, R : Read, BWR : BytesWR<W,R>> (pub BWR, pub R, pub W);
 
-impl<W : Write, R : Read, BWR : BytesWR<W,R>> Read for BRWImpl<W,R,BWR> {
+pub struct BWRImplW<'a, W : 'a + Write, BWR : 'a + BytesWR<W,VoidRead>> (&'a mut BWR, VoidRead, &'a mut W);
+pub struct BWRImplR<'a, R : 'a + Read, BWR : 'a + BytesWR<VoidWrite,R>> (&'a mut BWR, &'a mut R, VoidWrite);
+
+impl<'a, W : Write, BWR : BytesWR<W,VoidRead>> BWRImplW<'a, W, BWR> {
+  pub fn new(bwr : &'a mut BWR, w : &'a mut W) -> Self {
+    BWRImplW(bwr, VoidRead, w)
+  }
+}
+impl<'a, R : Read, BWR : BytesWR<VoidWrite,R>> BWRImplR<'a, R, BWR> {
+  pub fn new(bwr : &'a mut BWR, r : &'a mut R) -> Self {
+    BWRImplR(bwr, r, VoidWrite)
+  }
+}
+
+/// automatic end of of bmr read or write impl, include only if type will not fail on end
+pub mod unsafe_bwrimpl_autoend {
+  use std::io::{
+    Write,
+    Read,
+    Result,
+  };
+  use std::ops::Drop;
+  use super::{
+    BWRImplW,
+    BWRImplR,
+    BytesWR,
+    VoidRead,
+    VoidWrite,
+  };
+
+
+  impl<'a, W : Write, BWR : BytesWR<W,VoidRead>> Drop for BWRImplW<'a,W,BWR> {
+   fn drop(&mut self) {
+     self.0.end_write(&mut self.2).unwrap();
+   }
+  }
+  impl<'a, R : Read, BWR : BytesWR<VoidWrite,R>> Drop for BWRImplR<'a,R,BWR> {
+   fn drop(&mut self) {
+     self.0.end_read(&mut self.1).unwrap();
+   }
+  }
+}
+
+
+impl<'a,R : Read, BWR : BytesWR<VoidWrite,R>> Read for BWRImplR<'a,R,BWR> {
   fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
     self.0.b_read(&mut self.1, buf)
   }
 }
-impl<W : Write, R : Read, BWR : BytesWR<W,R>> Write for BRWImpl<W,R,BWR> {
+impl<'a,W : Write, BWR : BytesWR<W,VoidRead>> Write for BWRImplW<'a,W,BWR> {
   fn write(&mut self, cont: &[u8]) -> Result<usize> {
     self.0.b_write(&mut self.2, cont)
   }

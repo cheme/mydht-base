@@ -359,6 +359,22 @@ impl<'a, P : Peer, W : 'a + Write, R : 'a + Read> TunnelProxy<'a, P, W, R> {
 // - the actual writer (transport most of the time as a mutable reference)
 
 impl<'a, P : Peer, W : 'a + Write> TunnelWriter<'a, P, W> {
+
+/*  pub fn new_test(peers : &[&P], mode : TunnelMode<<<P as Peer>::Shadow as Shadow>::ShadowMode>, sender : &'a mut W) -> Option<TunnelWriter<'a, P, W>> {
+    let swol = match mode.get_head_mode() {
+      Some(m) => {
+        let mut res = ShadowWriteOnceL::new(peers[peers.len() - 1].get_shadower(true),sender, m.clone(), true);
+        for i in peers.len() - 1 .. 0 {
+  
+        }
+        Some(res)
+      },
+      None => {
+        None // TODO enum with single write also : simple shadow
+      }
+    };
+    None
+  }*/
   pub fn new(peers : &[&P], mode : TunnelMode<<<P as Peer>::Shadow as Shadow>::ShadowMode>, buf : &'a mut [u8], sender : &'a mut W, error : Option<usize>) -> TunnelWriter<'a, P, W> {
     let nbpeer = peers.len();
     let shad_main_mode = mode.get_main_mode();
@@ -422,10 +438,11 @@ impl<'a, P : Peer, W : 'a + Write> Write for TunnelWriter<'a, P, W> {
 
           let mut i = 0;
           // write proxy infos skip first (origin)
-          let init : Result<(usize,&mut Write)> = Ok((i,sender));
+          let init : Result<(usize,Option<&mut Write>,Option<ShadowWriteOnceL<<P as Peer>::Shadow>>)> = Ok((i,Some(sender),None));
           try!(shads.iter_mut().fold(init,|pr, sha| match pr {
          e@Err(_) => e,
-         Ok((i,w)) => {
+         Ok((i,ow,olw)) => {
+//           let mut fw = None;
          if i != 0 {
             let tunid = hopids[i];
             let npi = if i == addrs.len() - 1 {
@@ -441,10 +458,11 @@ impl<'a, P : Peer, W : 'a + Write> Write for TunnelWriter<'a, P, W> {
               tunnel_id_failure : error.clone(), // if set that is a failure TODO see if ref in proxy send
             };
 
-            let mut shw = if i == 1 {
-              ShadowWriteOnceL::new(sha,w,headmode,true) // use of dirty option unwrap
+/*            let mut shw = if ow.is_some() {
+              ShadowWriteOnceL::new(sha,ow.unwrap(),headmode,true)
             } else {
-              ShadowWriteOnceL::new(sha,w,headmode,false)
+              assert!(olw.is_some()); // or algo wrong
+              ShadowWriteOnceL::new(sha,olw.as_mut().unwrap(),headmode,false)
             };
 
             try!(bin_encode(&tpi, &mut shw, SizeLimit::Infinite).map_err(|e|BincErr(e)));
@@ -460,11 +478,15 @@ impl<'a, P : Peer, W : 'a + Write> Write for TunnelWriter<'a, P, W> {
               }
             } else {
               try!(shw.flush());
-            }
+            };
+            fw = Some(shw);
+
 //            panic!("lifetime issue shw is linked to 410");
 // TODO uncoment           oshw = Some(&mut shw);
         }
-        Ok((i + 1, w))
+        Ok((i + 1, None, fw))*/
+         }
+        Ok((i,ow,olw))
         },
           }));
         },

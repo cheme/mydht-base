@@ -11,7 +11,7 @@ use std::io::{
   Result as IoResult,
 };
 use std::fmt::Debug;
-
+use std::cell::RefCell;
 use rustc_serialize::{Encodable, Decodable};
 
 
@@ -28,7 +28,13 @@ pub trait Peer : KeyVal + 'static {
   /// read only)
   fn get_shadower (&self, write : bool) -> Self::Shadow;
 //  fn to_address (&self) -> SocketAddr;
+
 }
+
+
+pub struct ShadowW<S : Shadow> (S);
+
+pub struct ShadowR<S : Shadow> (S);
 
 /// for shadowing capability
 //Sync + Send + Clone + Debug + 'static {}
@@ -97,9 +103,19 @@ impl<'a, S : 'a + Shadow, R : 'a + Read> Read for ShadowReadOnce<'a,S,R> {
 pub struct ShadowWriteOnce<'a, S : 'a + Shadow, W : 'a + Write>(&'a mut S, &'a <S as Shadow>::ShadowMode, &'a mut W, bool);
 
 
+
+
 /// layerable shadowrite once (fat pointer on reader and recursive flush up to terminal reader). //
 /// last bool is to tell if it is first (reader is not flush on first)
-pub struct ShadowWriteOnceL<'a, S : 'a + Shadow>(&'a mut S, &'a <S as Shadow>::ShadowMode, &'a mut Write, bool,bool);
+pub struct ShadowWriteOnceL<'a, S : Shadow>(S, <S as Shadow>::ShadowMode, &'a mut Write, bool,bool);
+
+
+
+/// Multiple layered shadow write
+pub struct MShadowWriteOnce<'a, S : 'a + Shadow, W : 'a + Write>(&'a mut [RefCell<S>], &'a <S as Shadow>::ShadowMode, &'a mut W, &'a mut [bool]);
+
+/// inner unsafe element , for now using cells but next is simply unsafe write (after testing)
+struct MShadowWriteOnceEl<'a, S : 'a + Shadow, W : 'a + Write>(&'a[RefCell<S>], usize, &'a mut W, &'a <S as Shadow>::ShadowMode, &'a mut [bool]);
 
 impl<'a, S : 'a + Shadow, W : 'a + Write> ShadowWriteOnce<'a,S,W> {
   pub fn new(s : &'a mut S, r : &'a mut W, sm : &'a <S as Shadow>::ShadowMode) -> Self {
@@ -107,10 +123,76 @@ impl<'a, S : 'a + Shadow, W : 'a + Write> ShadowWriteOnce<'a,S,W> {
   }
 }
 impl<'a, S : 'a + Shadow> ShadowWriteOnceL<'a,S> {
-  pub fn new(s : &'a mut S, r : &'a mut Write, sm : &'a <S as Shadow>::ShadowMode, is_first : bool) -> Self {
+  pub fn new(s : S, r : &'a mut Write, sm : <S as Shadow>::ShadowMode, is_first : bool) -> Self {
     ShadowWriteOnceL(s, sm, r, false, is_first)
   }
 }
+impl<'a, S : 'a + Shadow, W : 'a + Write> MShadowWriteOnce<'a,S,W> {
+  pub fn new(s : &'a mut [RefCell<S>], r : &'a mut W, sm : &'a <S as Shadow>::ShadowMode, writtenhead : &'a mut [bool]) -> Self {
+    MShadowWriteOnce(s, sm, r, writtenhead)
+  }
+}
+
+impl<'a, S : 'a + Shadow, W : 'a + Write> Write for MShadowWriteOnce<'a,S,W> {
+  fn write(&mut self, cont: &[u8]) -> IoResult<usize> {
+    let mut el = MShadowWriteOnceEl(self.0, 0, self.2,self.1, self.3); 
+    el.write(cont)
+  }
+
+  fn flush(&mut self) -> IoResult<()> {
+    let mut el = MShadowWriteOnceEl(self.0, 0, self.2,self.1, self.3); 
+    el.flush()
+  }
+}
+impl<'a, S : 'a + Shadow, W : 'a + Write> Write for MShadowWriteOnceEl<'a,S,W> {
+  fn write(&mut self, cont: &[u8]) -> IoResult<usize> {
+    if !(self.4)[self.1] {
+      // write header
+
+      (self.4)[self.1] = true;
+    }
+    if self.1 == self.0.len() - 1 {
+      (self.0)[self.1].borrow_mut().shadow_iter(cont, self.2, &self.3)
+    } else {
+      let mut el = MShadowWriteOnceEl(self.0, self.1 + 1, self.2, self.3, self.4); 
+      (self.0)[self.1].borrow_mut().shadow_iter(cont, &mut el, &self.3)
+    }
+  }
+  fn flush(&mut self) -> IoResult<()> {
+    if self.1 == self.0.len() - 1 {
+      try!((self.0)[self.1].borrow_mut().shadow_flush(self.2, &self.3));
+      Ok(())
+    } else {
+      let mut el = MShadowWriteOnceEl(self.0, self.1 + 1, self.2, self.3, self.4); 
+      try!((self.0)[self.1].borrow_mut().shadow_flush(&mut el, &self.3));
+      el.flush()
+    }
+ 
+  }
+}
+/*
+impl<'a, S : 'a + Shadow> Write for MShadowWriteOnce<'a,S> {
+
+  fn write(&mut self, cont: &[u8]) -> IoResult<usize> {
+    for i in cont.len() .. 0 {
+      if !self.3[i-1] {
+        try!(self.0.shadow_header(&mut self.2, &self.1));
+        self.3 = true;
+      }
+      self.0.get_mut(i-1).unwrap().shadow_iter(cont, &mut self.2, &self.1)
+    }
+  }
+ 
+  /// flush does not flush the first inner writer
+  fn flush(&mut self) -> IoResult<()> {
+    // do not flush last
+    for i in 0 .. cont.len() - 1 {
+      try!(self.0.get_mut(i).unwrap().shadow_flush(&mut self.2, &self.1));
+    }
+  }
+}*/
+
+
 
 
 impl<'a, S : 'a + Shadow, W : 'a + Write> Write for ShadowWriteOnce<'a,S,W> {

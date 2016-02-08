@@ -10,6 +10,14 @@ use std::io::{
   Read,
   Result as IoResult,
 };
+use readwrite_comp::{
+  ExtRead,
+  ExtWrite,
+  CompW,
+  CompWState,
+  CompR,
+  CompRState,
+};
 use std::fmt::Debug;
 use rustc_serialize::{Encodable, Decodable};
 
@@ -27,108 +35,117 @@ pub trait Peer : KeyVal + 'static {
   /// read only)
   fn get_shadower (&self, write : bool) -> Self::Shadow;
 //  fn to_address (&self) -> SocketAddr;
+  /// mode for shadowing frame for authentification (no shadow most of the tipme) : aka ping/pong,
+  /// establishing a connection - this is use by default by peer rules
+  fn default_auth_mode(&self) -> <Self::Shadow as Shadow>::ShadowMode;
+  /// mode to shadow message and also to shadow layer of tunnel TODO switch to two different modes
+  fn default_message_mode(&self) -> <Self::Shadow as Shadow>::ShadowMode;
+  /// mode for header of tunnel
+  fn default_header_mode(&self) -> <Self::Shadow as Shadow>::ShadowMode;
+
 
 }
 
-
-pub struct ShadowW<S : Shadow> (S);
-
-pub struct ShadowR<S : Shadow> (S);
-
-/// for shadowing capability
+/// TODO after tunnel implementation see if mode of shadow really need change, if not 
+/// refactor by using mode in get_shadow of peer directly and removing set_mode : allowing
+/// enum for shadow (see how to pack for not max size (noshadowmode). It also means that read
+/// header will no longer need to get the shadowmode from the header (less overhead).
 //Sync + Send + Clone + Debug + 'static {}
-pub trait Shadow : Send + 'static {
+pub trait Shadow : Send + 'static + ExtRead + ExtWrite {
   /// type of shadow to apply (most of the time this will be () or bool but some use case may
   /// require 
   /// multiple shadowing scheme, and therefore probably an enum type).
   type ShadowMode : Clone + Eq + Encodable + Decodable + Debug;
+
+  fn set_mode(&mut self, Self::ShadowMode);
+
+  fn get_mode(&self) -> Self::ShadowMode;
+
+
+  /// base for shadow iter using a symetric key (first param), mainly use in reply for tunnel
+  /// message TODO just return ref to associated type being ExtRead and ExtWrite with ... or
+  /// specific mode?
+  fn shadow_iter_sim<W : Write> (&mut self, &[u8], &[u8], &mut W) -> IoResult<usize>;
+
+  fn read_shadow_iter_sim<R : Read> (&mut self, &[u8], &mut R, buf : &mut [u8]) -> IoResult<usize>;
+  fn shadow_sim_flush<W : Write> (&mut self, &mut W) -> IoResult<()>;
+  /// create a simkey for current mode TODO change to asref u8 in result, mainly use in reply for tunnel
+  /// message 
+  fn shadow_simkey(&mut self) -> Vec<u8>;
+ 
+// alias for previous naming
+  #[inline]
+  fn read_shadow_header<R : Read> (&mut self, r : &mut R) -> IoResult<()> {
+    self.read_header(r)
+  }
+  #[inline]
+  fn read_shadow_iter<R : Read> (&mut self, r : &mut R, buf: &mut [u8]) -> IoResult<usize> {
+    self.read_from(r, buf)
+  }
+  #[inline]
   /// get the header required for a shadow scheme : for instance the shadowmode representation and
   /// the salt. The action also make the shadow iter method to use the right state (internal state
   /// for shadow mode). TODO refactor to directly write in a Writer??
-  fn shadow_header<W : Write> (&mut self, &mut W, &Self::ShadowMode) -> IoResult<()>;
+  fn shadow_header<W : Write> (&mut self, w : &mut W) -> IoResult<()> {
+    self.write_header(w)
+  }
+  #[inline]
   /// Shadow of message block (to use in the writer), and write it in writer. The function maps
   /// over write (see utils :: send_msg)
-  fn shadow_iter<W : Write> (&mut self, &[u8], &mut W, &Self::ShadowMode) -> IoResult<usize>;
+  fn shadow_iter<W : Write> (&mut self, cont : &[u8], w : &mut W) -> IoResult<usize> {
+    self.write_into(w, cont)
+  }
+  #[inline]
   /// flush at the end of message writing (useless to add content : reader could not read it),
   /// usefull to emptied some block cyper buffer, it does not flush the writer which should be
   /// flush manually (allow using multiple shadower in messages such as tunnel).
-  fn shadow_flush<W : Write> (&mut self, w : &mut W, &Self::ShadowMode) -> IoResult<()>;
-  /// read header getting mode and initializing internal information
-  fn read_shadow_header<R : Read> (&mut self, &mut R) -> IoResult<Self::ShadowMode>;
-  /// read shadow returning number of bytes read, probably using an internal buffer
-  fn read_shadow_iter<R : Read> (&mut self, &mut R, buf: &mut [u8], &Self::ShadowMode) -> IoResult<usize>;
-  /// all message but auth related one (PING  and PONG)
-  fn default_message_mode () -> Self::ShadowMode;
-  /// auth related messages (PING  and PONG)
-  fn default_auth_mode () -> Self::ShadowMode;
-  /// mode for tunnel headers or short messages
-  fn default_head_mode () -> Self::ShadowMode;
- 
-  /// base for shadow iter using a symetric key (first param), mainly use in reply for tunnel
-  /// message
-  fn shadow_iter_sim<W : Write> (&mut self, &[u8], &[u8], &mut W, &Self::ShadowMode) -> IoResult<usize>;
-
-  fn read_shadow_iter_sim<R : Read> (&mut self, &[u8], &mut R, buf : &mut [u8], &Self::ShadowMode) -> IoResult<usize>;
-  fn shadow_sim_flush<W : Write> (&mut self, &mut W, &Self::ShadowMode) -> IoResult<()>;
-  /// create a simkey TODO change to asref u8 in result, mainly use in reply for tunnel
-  /// message
-  fn shadow_simkey(&mut self, &Self::ShadowMode) -> Vec<u8>;
- 
-}
-
-/// a struct for reading once with shadow
-pub struct ShadowReadOnce<'a, S : 'a + Shadow, R : 'a + Read>(&'a mut S,Option<<S as Shadow>::ShadowMode>, &'a mut R);
-
-impl<'a, S : 'a + Shadow, R : 'a + Read> ShadowReadOnce<'a,S,R> {
-  pub fn new(s : &'a mut S, r : &'a mut R) -> Self {
-    ShadowReadOnce(s, None, r)
+  fn shadow_flush<W : Write> (&mut self, w : &mut W) -> IoResult<()> {
+    self.flush_into(w)
   }
 
 }
 
-impl<'a, S : 'a + Shadow, R : 'a + Read> Read for ShadowReadOnce<'a,S,R> {
-  fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
-    if self.1.is_none() {
-      let sm = try!(self.0.read_shadow_header(self.2));
-      self.1 = Some(sm);
-    }
-    self.0.read_shadow_iter(&mut self.2, buf, self.1.as_ref().unwrap())
-  }
+
+/// a struct for reading once with shadow TODO two lifetime?? yes after refactoring Comp is ok
+pub type ShadowReadOnce<'a, S : 'a + Shadow, R : 'a + Read> = CompR<'a, 'a, R, S>;
+
+#[inline]
+pub fn new_shadow_read_once<'a, S : 'a + Shadow, R : 'a + Read>(r : &'a mut R, s : &'a mut S) -> ShadowReadOnce<'a,S,R> {
+  CompR(r,s,CompRState::Initial)
 }
+
 
 /// a struct for writing once with shadow (in a write abstraction)
 /// Flush does not lead to a new header write (for this please create a new shadowWriteOnce).
 /// Flush does not flush the inner writer but only the shadower (to flush writer please first end 
-pub struct ShadowWriteOnce<'a, S : 'a + Shadow, W : 'a + Write>(&'a mut S, &'a <S as Shadow>::ShadowMode, &'a mut W, bool);
+pub type ShadowWriteOnce<'a, S : 'a + Shadow, W : 'a + Write> = CompW<'a, 'a, W , S>;
+//pub struct ShadowWriteOnce<'a, S : 'a + Shadow, W : 'a + Write>(&'a mut S, &'a <S as Shadow>::ShadowMode, &'a mut W, bool);
 
-
-
+#[inline]
+pub fn new_shadow_write_once<'a, S : 'a + Shadow, W : 'a + Write>(r : &'a mut W, s : &'a mut S) -> ShadowWriteOnce<'a,S,W> {
+  CompW(r,s,CompWState::Initial)
+}
 
 /// layerable shadowrite once (fat pointer on reader and recursive flush up to terminal reader). //
-/// last bool is to tell if it is first (reader is not flush on first)
-pub struct ShadowWriteOnceL<'a, S : Shadow>(S, <S as Shadow>::ShadowMode, &'a mut Write, bool,bool);
+/// last bool is to tell if it is first (reader is not flush on first) TODO not use remove
+pub struct ShadowWriteOnceL<'a, S : Shadow>(S, (), &'a mut Write, bool,bool);
 
 
 
 /// Multiple layered shadow write
-pub struct MShadowWriteOnce<'a, S : 'a + Shadow, W : 'a + Write>(&'a mut [S], &'a <S as Shadow>::ShadowMode, &'a mut W, &'a mut [bool]);
+pub struct MShadowWriteOnce<'a, S : 'a + Shadow, W : 'a + Write>(&'a mut [S], (), &'a mut W, &'a mut [bool]);
 
-
-impl<'a, S : 'a + Shadow, W : 'a + Write> ShadowWriteOnce<'a,S,W> {
-  pub fn new(s : &'a mut S, r : &'a mut W, sm : &'a <S as Shadow>::ShadowMode) -> Self {
-    ShadowWriteOnce(s, sm, r, false)
-  }
-}
 
 // TODO delete it
 impl<'a, S : 'a + Shadow> ShadowWriteOnceL<'a,S> {
-  pub fn new(s : S, r : &'a mut Write, sm : <S as Shadow>::ShadowMode, is_first : bool) -> Self {
-    ShadowWriteOnceL(s, sm, r, false, is_first)
+  pub fn new(s : S, r : &'a mut Write, is_first : bool) -> Self {
+    ShadowWriteOnceL(s, (), r, false, is_first)
   }
 }
 impl<'a, S : 'a + Shadow, W : 'a + Write> MShadowWriteOnce<'a,S,W> {
-  pub fn new(s : &'a mut [S], r : &'a mut W, sm : &'a <S as Shadow>::ShadowMode, writtenhead : &'a mut [bool]) -> Self {
-    MShadowWriteOnce(s, sm, r, writtenhead)
+  pub fn new(s : &'a mut [S], r : &'a mut W, writtenhead : &'a mut [bool]) -> Self {
+    // TODO use Vec and set mode of all S
+    MShadowWriteOnce(s, (), r, writtenhead)
   }
 }
 
@@ -138,32 +155,32 @@ impl<'a, S : 'a + Shadow, W : 'a + Write> Write for MShadowWriteOnce<'a,S,W> {
       // write header
       if self.0.len() > 1 {
       if let Some((f,last)) = self.0.split_first_mut() {
-      let mut el = MShadowWriteOnce(last, self.1, self.2, &mut self.3[1..]); 
-      try!(f.shadow_header(&mut el, self.1));
+      let mut el = MShadowWriteOnce(last, (),self.2, &mut self.3[1..]); 
+      try!(f.shadow_header(&mut el));
       }} else {
-        try!((self.0).get_mut(0).unwrap().shadow_header(self.2, self.1));
+        try!((self.0).get_mut(0).unwrap().shadow_header(self.2));
       }
       (self.3)[0] = true;
     }
     if self.0.len() > 1 {
     if let Some((f,last)) = self.0.split_first_mut() {
-      let mut el = MShadowWriteOnce(last, self.1, self.2, &mut self.3[1..]); 
-      return f.shadow_iter(cont, &mut el, self.1);
+      let mut el = MShadowWriteOnce(last,(), self.2, &mut self.3[1..]); 
+      return f.shadow_iter(cont, &mut el);
     }
     }
     // last
-    (self.0).get_mut(0).unwrap().shadow_iter(cont, self.2, self.1)
+    (self.0).get_mut(0).unwrap().shadow_iter(cont, self.2)
   }
   fn flush(&mut self) -> IoResult<()> {
     if self.0.len() > 1 {
     if let Some((f,last)) = self.0.split_first_mut()  {
-      let mut el = MShadowWriteOnce(last, self.1, self.2, &mut self.3[1..]); 
-      try!(f.shadow_flush(&mut el, self.1));
+      let mut el = MShadowWriteOnce(last, (),self.2, &mut self.3[1..]); 
+      try!(f.shadow_flush(&mut el));
       return el.flush();
     }
     }
     // last do not flush writer
-    (self.0).get_mut(0).unwrap().shadow_flush(self.2, self.1)
+    (self.0).get_mut(0).unwrap().shadow_flush(self.2)
  
   }
 }
@@ -191,7 +208,7 @@ impl<'a, S : 'a + Shadow> Write for MShadowWriteOnce<'a,S> {
 
 
 
-
+/* impl in CompW
 impl<'a, S : 'a + Shadow, W : 'a + Write> Write for ShadowWriteOnce<'a,S,W> {
 
   fn write(&mut self, cont: &[u8]) -> IoResult<usize> {
@@ -206,21 +223,21 @@ impl<'a, S : 'a + Shadow, W : 'a + Write> Write for ShadowWriteOnce<'a,S,W> {
   fn flush(&mut self) -> IoResult<()> {
     self.0.shadow_flush(&mut self.2, &self.1)
   }
-}
+}*/
 
 impl<'a, S : 'a + Shadow> Write for ShadowWriteOnceL<'a,S> {
 
   fn write(&mut self, cont: &[u8]) -> IoResult<usize> {
     if !self.3 {
-      try!(self.0.shadow_header(&mut self.2, &self.1));
+      try!(self.0.shadow_header(&mut self.2));
       self.3 = true;
     }
-    self.0.shadow_iter(cont, &mut self.2, &self.1)
+    self.0.shadow_iter(cont, &mut self.2)
   }
  
   /// flush does not flush the first inner writer
   fn flush(&mut self) -> IoResult<()> {
-    try!(self.0.shadow_flush(&mut self.2, &self.1));
+    try!(self.0.shadow_flush(&mut self.2));
     if !self.4 {
       self.2.flush()
     } else {
@@ -235,58 +252,56 @@ pub struct NoShadow;
 
 impl Shadow for NoShadow {
   type ShadowMode = ();
+ 
   #[inline]
-  fn shadow_header<W : Write> (&mut self, _ : &mut W, _ : &Self::ShadowMode) -> IoResult<()> {
-    Ok(()) 
-  }
+  fn set_mode (&mut self,_ : Self::ShadowMode)  {}
   #[inline]
-  fn shadow_iter<W : Write> (&mut self, m : &[u8], w : &mut W, _ : &Self::ShadowMode) -> IoResult<usize> {
+  fn get_mode (&self) -> Self::ShadowMode {()}
+ 
+  #[inline]
+  fn shadow_iter_sim<W : Write> (&mut self, _ : &[u8], m : &[u8], w : &mut W) -> IoResult<usize> {
     w.write(m)
   }
   #[inline]
-  fn shadow_flush<W : Write> (&mut self, w : &mut W, _ : &Self::ShadowMode) -> IoResult<()> {
-    Ok(())
-  }
-  #[inline]
-  fn read_shadow_header<R : Read> (&mut self, _ : &mut R) -> IoResult<Self::ShadowMode> {
-    Ok(())
-  }
-  #[inline]
-  fn read_shadow_iter<R : Read> (&mut self, r : &mut R, buf: &mut [u8], _ : &Self::ShadowMode) -> IoResult<usize> {
+  fn read_shadow_iter_sim<R : Read> (&mut self, _ : &[u8], r : &mut R, buf : &mut [u8]) -> IoResult<usize> {
     r.read(buf)
   }
  
   #[inline]
-  fn default_message_mode () -> Self::ShadowMode {
-    ()
+  fn shadow_sim_flush<W : Write> (&mut self, w : &mut W) -> IoResult<()> {
+    Ok(())
   }
-  #[inline]
-  fn default_auth_mode () -> Self::ShadowMode {
-    ()
-  }
-  #[inline]
-  fn default_head_mode () -> Self::ShadowMode {
-    ()
-  }
- 
-  #[inline]
-  fn shadow_iter_sim<W : Write> (&mut self, _ : &[u8], m : &[u8], w : &mut W, _ : &Self::ShadowMode) -> IoResult<usize> {
-    w.write(m)
-  }
-  #[inline]
-  fn read_shadow_iter_sim<R : Read> (&mut self, _ : &[u8], r : &mut R, buf : &mut [u8], _ : &Self::ShadowMode) -> IoResult<usize> {
-    r.read(buf)
-  }
- 
-  #[inline]
-  fn shadow_sim_flush<W : Write> (&mut self, w : &mut W, _ : &Self::ShadowMode) -> IoResult<()> {
-    w.flush()
-  }
-  fn shadow_simkey(&mut self, _ : &Self::ShadowMode) -> Vec<u8> {
+  fn shadow_simkey(&mut self) -> Vec<u8> {
     Vec::new()
   }
  
 }
+impl ExtWrite for NoShadow {
+  #[inline]
+  fn write_header<W : Write>(&mut self, _ : &mut W) -> IoResult<()> {
+    Ok(())
+  }
+  #[inline]
+  fn write_into<W : Write>(&mut self, w : &mut W, cont : &[u8]) -> IoResult<usize> {
+    w.write(cont)
+  }   
+  #[inline]
+  fn flush_into<W : Write>(&mut self, w : &mut W) -> IoResult<()> {Ok(())}
+  #[inline]
+  fn write_end<W : Write>(&mut self, _ : &mut W) -> IoResult<()> {Ok(())}
+}
+impl ExtRead for NoShadow {
+  #[inline]
+  fn read_header<R : Read>(&mut self, _ : &mut R) -> IoResult<()> {Ok(())}
+  #[inline]
+  fn read_from<R : Read>(&mut self, r : &mut R, buf : &mut[u8]) -> IoResult<usize> {
+    r.read(buf)
+  }
+  #[inline]
+  fn read_end<R : Read>(&mut self, _ : &mut R) -> IoResult<()> {Ok(())}
+}
+
+
 
 
 #[derive(RustcDecodable,RustcEncodable,Debug,PartialEq,Clone)]

@@ -9,6 +9,7 @@ extern crate rand;
 extern crate bit_vec;
 extern crate byteorder;
 extern crate bincode;
+extern crate readwrite_comp;
 /*
 #[macro_export]
 /// static buffer
@@ -45,6 +46,14 @@ macro_rules! noshadow(() => (
   fn get_shadower (&self, _ : bool) -> Self::Shadow {
     NoShadow
   }
+  #[inline]
+  fn default_auth_mode(&self) -> <Self::Shadow as Shadow>::ShadowMode {()}
+  #[inline]
+  fn default_message_mode(&self) -> <Self::Shadow as Shadow>::ShadowMode {()}
+  #[inline]
+  fn default_header_mode(&self) -> <Self::Shadow as Shadow>::ShadowMode {()}
+
+
 ));
 
 

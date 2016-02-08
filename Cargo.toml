@@ -25,6 +25,10 @@ byteorder = "0.3.13"
 #bit-vec = "0.4.2"
 #vec_map = "0.3.0"
 
+[dependencies.readwrite-comp]
+path = "../readwrite-comp/"
+#git = "https://github.com/cheme/readwrite.git"
+
 [dependencies.bit-vec]
 git = "https://github.com/cheme/bit-vec.git"
 

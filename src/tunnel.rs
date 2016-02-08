@@ -22,6 +22,8 @@ use peer::{
   ShadowReadOnce,
   ShadowWriteOnce,
   ShadowWriteOnceL,
+  new_shadow_read_once,
+  new_shadow_write_once,
 };
 use std::io::{
   Write,
@@ -63,92 +65,76 @@ pub type TunnelID = usize;
 /// TODO implement a filter in server process (and client proxy).
 /// When a nb hop is in tunnel mode it could be changed or not be the same as the actual size : it
 /// is only an indication of the size to use to proxy query (or to reply for publicTunnel).
-pub enum TunnelMode<ShadowMode : Clone + Eq> {
-  
+pub enum TunnelMode {
   NoTunnel,
-
   /// Tunnel using a single path (forward path = backward path). Parameter is number of hop in the
   /// tunnel (1 is direct).
   /// Error take tunnel backward (error is unencrypted (we do not know originator) and therefore
   /// not explicit : id node could not proxied.
-  /// If false, content is only encrypted with dest key (if true full frame is encrypted with every
-  /// tunnel peers key). If true it is encrypted with every keys (and temp key for every hop are
+  /// For full tunnel shadow mode it is encrypted with every keys (and temp key for every hop are
   /// transmitted to dest for reply (every hop got it packed to)).
-  /// First shadowmode is for routing info
-  /// Second is for message or message plus routing info (full enc)
-  Tunnel(u8,bool,ShadowMode,ShadowMode),
+  Tunnel(u8,TunnelShadowMode),
   /// Tunnel with different path forward and backward.
   /// param is nb of hop.
-  /// If false, only dest content is encrypted.
-  /// last bool  is 
   /// Error will use forward route like normal tunnel if boolean is true, or backward route (very
   /// likely to fail and result in query timeout) if boolean is false
-  BiTunnel(u8,bool,bool,ShadowMode,ShadowMode),
+  BiTunnel(u8,TunnelShadowMode,bool),
  
   /// in this mode origin and destination know themselve (cf message mode), we simply reply with same nb hop. Back
   /// route is therefore from dest (no need to include back route info.
-  PublicTunnel(u8,ShadowMode,ShadowMode),
-  
+  PublicTunnel(u8,TunnelShadowMode),
 
 }
-impl<SM : Clone + Eq> TunnelMode<SM> {
+
+#[derive(RustcDecodable,RustcEncodable,Debug,Clone,PartialEq,Eq)]
+pub enum TunnelShadowMode {
+  /// NoShadow for testing shadow is not applied
+  NoShadow,
+  /// shadow all with full layer, in default mode 
+  Full,
+  /// Dest key only encryption for content in default mode, header is layered fith headere in
+  /// default mode, header is layered with header mode
+  Last,
+  /// Same as last but header is using same shadower (default as content) 
+  LastDefault,
+}
+
+impl TunnelMode {
+  pub fn tunnel_shadow_mode(&self) -> TunnelShadowMode {
+     match self {
+      &TunnelMode::NoTunnel => TunnelShadowMode::NoShadow,
+      &TunnelMode::Tunnel(_,ref b) 
+      | &TunnelMode::BiTunnel(_,ref b,_) 
+      | &TunnelMode::PublicTunnel(_,ref b) => b.clone(),
+    }
+  }
   pub fn is_full_enc(&self) -> bool {
-    match self {
-      &TunnelMode::NoTunnel => false,
-      &TunnelMode::Tunnel(_,b,_,_) => b,
-      &TunnelMode::BiTunnel(_,b,_,_,_) => b,
-      &TunnelMode::PublicTunnel(_,_,_) => false,
-    }
+    TunnelShadowMode::Full == self.tunnel_shadow_mode()
   }
-  /// return head mode only if not the same as main mode and it is actually used
-  pub fn get_head_mode(&self) -> Option<&SM> {
-    match self {
-      &TunnelMode::NoTunnel => None,
-      &TunnelMode::Tunnel(_,ref b,ref h,ref m) => {
-        if !*b && *h != *m {
-          Some(h)
-        } else {None}
-      },
-      &TunnelMode::BiTunnel(_,ref b,_,ref h,ref m) => {
-        if !*b && *h != *m {
-          Some(h)
-        } else {None}
-      },
-      &TunnelMode::PublicTunnel(_,ref h,ref m) => {
-        if *h != *m {
-          Some(h)
-        } else {None}
-      },
-    }
-  }
-  pub fn get_main_mode(&self) -> Option<&SM> {
-    match self {
-      &TunnelMode::NoTunnel => None,
-      &TunnelMode::Tunnel(_,_,_,ref m) => Some(m),
-      &TunnelMode::BiTunnel(_,_,_,_,ref m) => Some(m),
-      &TunnelMode::PublicTunnel(_,_,ref m) => Some(m),
-    }
+  /// do we apply head mode TODO replace by is het everywhere
+  pub fn head_mode(&self) -> bool {
+    TunnelShadowMode::Last == self.tunnel_shadow_mode()
   }
 
   // do we use distinct encoding for content
   pub fn is_het(&self) -> bool {
-    match self {
-      &TunnelMode::NoTunnel => false,
-      &TunnelMode::Tunnel(_,_,ref h,ref m) => h != m,
-      &TunnelMode::BiTunnel(_,_,_,ref h,ref m) => h != m,
-      &TunnelMode::PublicTunnel(_,ref h,ref m) => h != m,
-    }
-  
+    self.tunnel_shadow_mode().is_het()
   }
 
+}
+impl TunnelShadowMode {
+  // do we use distinct encoding for content
+  pub fn is_het(&self) -> bool {
+    &TunnelShadowMode::Last == self
+  }
 }
 #[derive(RustcDecodable,RustcEncodable,Debug,Clone)]
 /// QueryMode info to use in message between peers.
 /// TODO delete : it is info that are read/write directly in methods (tunnelid)
-pub enum TunnelModeMsg<ShadowMode : Clone + Eq> {
-  Tunnel(u8,Option<usize>, TunnelID, ShadowMode, ShadowMode), //first u8 is size of tunnel for next hop of query, usize is size of descriptor for proxying info, if no usize it means it is fully shadowed and a pair is under it
-  BiTunnel(u8,bool,Option<usize>,TunnelID, ShadowMode, ShadowMode), // see tunnel, plus if bool is true we error reply with forward route stored as laste param TODO replace Vec<u8> by Reader (need encodable of this reader as writalll
-  PublicTunnel(u8,usize,TunnelID,ShadowMode,ShadowMode),
+pub enum TunnelModeMsg {
+  Tunnel(u8,Option<usize>, TunnelID, TunnelShadowMode), //first u8 is size of tunnel for next hop of query, usize is size of descriptor for proxying info, if no usize it means it is fully shadowed and a pair is under it
+  BiTunnel(u8,bool,Option<usize>,TunnelID,TunnelShadowMode), // see tunnel, plus if bool is true we error reply with forward route stored as laste param TODO replace Vec<u8> by Reader (need encodable of this reader as writalll
+  PublicTunnel(u8,usize,TunnelID,TunnelShadowMode),
 }
 
 #[derive(RustcDecodable,RustcEncodable,Debug,Clone)]
@@ -218,48 +204,38 @@ impl<P : Peer> TunnelProxyInfo<P> {
 
 }*/
 
-impl<ShadowMode : Clone + Eq> TunnelModeMsg<ShadowMode> {
+impl TunnelModeMsg {
   /// get corresponding querymode
-  pub fn get_mode (&self) -> TunnelMode<ShadowMode> {
+  pub fn get_mode (&self) -> TunnelMode {
     match self {
 
-      &TunnelModeMsg::Tunnel (l,Some(_),_,ref s1,ref s2) => TunnelMode::Tunnel(l,false,s1.clone(),s2.clone()),
-      &TunnelModeMsg::Tunnel (l,None,_,ref s1,ref s2) => TunnelMode::Tunnel(l,true,s1.clone(),s2.clone()),
-      &TunnelModeMsg::BiTunnel (l,f,Some(_),_,ref s1,ref s2) => TunnelMode::BiTunnel(l,false,f,s1.clone(),s2.clone()),
-      &TunnelModeMsg::BiTunnel (l,f,None,_,ref s1,ref s2) => TunnelMode::BiTunnel(l,true,f,s1.clone(),s2.clone()),
-      &TunnelModeMsg::PublicTunnel(l,_,_,ref s1, ref s2) => TunnelMode::PublicTunnel(l,s1.clone(),s2.clone()),
+      &TunnelModeMsg::Tunnel (l,_,_,ref s1) => TunnelMode::Tunnel(l,s1.clone()),
+      &TunnelModeMsg::BiTunnel (l,f,_,_,ref s1) => TunnelMode::BiTunnel(l,s1.clone(),f),
+      &TunnelModeMsg::PublicTunnel(l,_,_,ref s1) => TunnelMode::PublicTunnel(l,s1.clone()),
     }
    
   }
   pub fn get_tunnelid (&self) -> &TunnelID {
     match self {
-      &TunnelModeMsg::Tunnel (_,_,ref tid,_,_) => tid,
-      &TunnelModeMsg::BiTunnel (_,_,_,ref tid,_,_) => tid,
-      &TunnelModeMsg::PublicTunnel(_,_,ref tid,_, _) => tid,
+      &TunnelModeMsg::Tunnel (_,_,ref tid,_) => tid,
+      &TunnelModeMsg::BiTunnel (_,_,_,ref tid,_) => tid,
+      &TunnelModeMsg::PublicTunnel(_,_,ref tid, _) => tid,
     }
   }
   pub fn get_tunnel_length (&self) -> u8 {
     match self {
-      &TunnelModeMsg::Tunnel (l,_,_,_,_) => l,
-      &TunnelModeMsg::BiTunnel (l,_,_,_,_,_) => l,
-      &TunnelModeMsg::PublicTunnel(l,_,_,_, _) => l,
+      &TunnelModeMsg::Tunnel (l,_,_,_) => l,
+      &TunnelModeMsg::BiTunnel (l,_,_,_,_) => l,
+      &TunnelModeMsg::PublicTunnel(l,_,_, _) => l,
     }
   }
-  pub fn get_shadow_proxy_info (&self) -> ShadowMode {
+  pub fn get_shadow_mode (&self) -> TunnelShadowMode {
     match self {
-      &TunnelModeMsg::Tunnel (_,_,_,ref s,_) => s.clone(),
-      &TunnelModeMsg::BiTunnel (_,_,_,_,ref s,_) => s.clone(),
-      &TunnelModeMsg::PublicTunnel(_,_,_,ref s, _) => s.clone(),
+      &TunnelModeMsg::Tunnel (_,_,_,ref s) => s.clone(),
+      &TunnelModeMsg::BiTunnel (_,_,_,_,ref s) => s.clone(),
+      &TunnelModeMsg::PublicTunnel(_,_,_,ref s) => s.clone(),
     }
   }
-  pub fn get_shadow_message (&self) -> ShadowMode {
-    match self {
-      &TunnelModeMsg::Tunnel (_,_,_,_,ref s) => s.clone(),
-      &TunnelModeMsg::BiTunnel (_,_,_,_,_,ref s) => s.clone(),
-      &TunnelModeMsg::PublicTunnel(_,_,_,_,ref s) => s.clone(),
-    }
-  }
-
 }
 
 
@@ -269,7 +245,7 @@ pub struct TunnelReader<'a, P : Peer, R : 'a + Read> {
   // payload remaining size
   rem_size : usize,
   buf: &'a mut [u8],
-  mode: Option<TunnelMode<<<P as Peer>::Shadow as Shadow>::ShadowMode>>, // mode is read from first frame
+  mode: Option<TunnelMode>, // mode is read from first frame TODO remove as it is done by CompR state
   shadow: <P as Peer>::Shadow, // our decoding
   shacont: <P as Peer>::Shadow, // our decoding for corntent if het
   reader: &'a mut R,
@@ -288,7 +264,7 @@ pub struct TunnelWriter<'a, P : Peer, W : 'a + Write> {
   hopids: Vec<usize>, // Id of all hop to report error
   error: Option<usize>, // possible error hop to report
   hasheader: bool,
-  mode: TunnelMode<<<P as Peer>::Shadow as Shadow>::ShadowMode>,
+  mode: TunnelMode,
   sender: &'a mut W,
 }
 
@@ -333,7 +309,7 @@ impl<'a, P : Peer, W : 'a + Write, R : 'a + Read> TunnelProxy<'a, P, W, R> {
         Ok(wix)
 
       },
-      &Some(TunnelMode::PublicTunnel(nbhop,ref contenthead, ref contentshad)) => {
+      &Some(TunnelMode::PublicTunnel(nbhop,ref tsmode)) => {
         if !self.modewritten {
           try!(bin_encode(&self.inner.mode.as_ref().unwrap(), self.sender, SizeLimit::Infinite).map_err(|e|BincErr(e)));
           self.modewritten = true;
@@ -375,23 +351,36 @@ impl<'a, P : Peer, W : 'a + Write> TunnelWriter<'a, P, W> {
     };
     None
   }*/
-  pub fn new(peers : &[&P], mode : TunnelMode<<<P as Peer>::Shadow as Shadow>::ShadowMode>, buf : &'a mut [u8], sender : &'a mut W, error : Option<usize>) -> TunnelWriter<'a, P, W> {
+  pub fn new(peers : &[&P], mode : TunnelMode, buf : &'a mut [u8], sender : &'a mut W, error : Option<usize>, 
+  headmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
+  contmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
+) -> TunnelWriter<'a, P, W> {
     let nbpeer = peers.len();
-    let shad_main_mode = mode.get_main_mode();
     let mut addr = Vec::with_capacity(nbpeer);
     let mut shad = Vec::with_capacity(nbpeer);
     let mut hopids = Vec::with_capacity(nbpeer);
     let mut thrng = thread_rng();
     let mut geniter = thrng.gen_iter();
-    if shad_main_mode.is_some() {
+
+    if let TunnelShadowMode::NoShadow = mode.tunnel_shadow_mode() {
       for p in peers {
         addr.push(p.to_address());
-        shad.push(p.get_shadower(true));
+        let mut s = p.get_shadower(true);
+        if mode.is_het() {
+          s.set_mode(headmode.clone());
+        } else {
+          s.set_mode(contmode.clone());
+        }
+        shad.push(s);
         hopids.push(geniter.next().unwrap());
       }
     }
     let shacont = if mode.is_het() {
-      peers.get(peers.len() -1).map(|p|p.get_shadower(true))
+      peers.get(peers.len() -1).map(|p|{
+        let mut s = p.get_shadower(true);
+        s.set_mode(contmode.clone());
+        s
+      })
     } else {
       None
     };
@@ -434,7 +423,7 @@ impl<'a, P : Peer, W : 'a + Write> Write for TunnelWriter<'a, P, W> {
 
       match &self.mode.clone() {
         &TunnelMode::NoTunnel => (),
-        &TunnelMode::PublicTunnel(_,ref headmode,ref contentmode) => {
+        &TunnelMode::PublicTunnel(_,ref mode) => {
 
           let mut i = 0;
           // write proxy infos skip first (origin)
@@ -490,13 +479,11 @@ impl<'a, P : Peer, W : 'a + Write> Write for TunnelWriter<'a, P, W> {
         },
           }));
         },
-        &TunnelMode::Tunnel(_,layercontent,ref headmode,ref contentmode) => {
-          if layercontent { panic!("unimplemented layered content") };
+        &TunnelMode::Tunnel(_,ref mode) => {
           panic!("unimplemented tunnelmode");
 //          let hops = 
         },
-        &TunnelMode::BiTunnel(_,layercontent,errorasfwd,ref headmode,ref contentmode) => {
-          if layercontent { panic!("unimplemented layered content") };
+        &TunnelMode::BiTunnel(_,ref errorasfwd,ref mode) => {
           panic!("unimplemented tunnelmode");
         },
       }
@@ -511,13 +498,13 @@ impl<'a, P : Peer, W : 'a + Write> Write for TunnelWriter<'a, P, W> {
       TunnelMode::NoTunnel => {
         self.sender.write(cont)
       },
-      TunnelMode::PublicTunnel(_,_,ref contentmode) => {
+      TunnelMode::PublicTunnel(_,ref mode) => {
         // write cont non layered (public actually only non layered)
         match &mut self.shacont {
-          &mut Some(ref mut s) => s.shadow_iter(cont, self.sender, contentmode),
+          &mut Some(ref mut s) => s.shadow_iter(cont, self.sender),
           _ => {
             let mut sha = self.shads.get_mut(self.addrs.len() - 1).unwrap();
-            sha.shadow_iter(cont, self.sender, contentmode)
+            sha.shadow_iter(cont, self.sender)
           },
         }
 
@@ -536,10 +523,10 @@ impl<'a, P : Peer, W : 'a + Write> Write for TunnelWriter<'a, P, W> {
     match self.mode {
       TunnelMode::NoTunnel => {
       },
-      TunnelMode::PublicTunnel(_,_,ref contentmode) => {
+      TunnelMode::PublicTunnel(_,ref mode) => {
         // write cont non layered (public actually only non layered)
         let mut sha = self.shads.get_mut(self.addrs.len() - 1).unwrap();
-        try!(sha.shadow_flush(self.sender, contentmode));
+        try!(sha.shadow_flush(self.sender));
       },
       _ => {
         //  write backroute for last hop only (on each proxy back is appended)
@@ -557,7 +544,15 @@ impl<'a, P : Peer, W : 'a + Write> Write for TunnelWriter<'a, P, W> {
 
 // create a tunnel reader : use PeerTest (currently using NoShadow...)
 impl<'a, P : Peer, R : 'a + Read> TunnelReader<'a,P,R> {
-  pub fn new(r : &'a mut R, buf : &'a mut [u8], shad : <P as Peer>::Shadow, shacont : <P as Peer>::Shadow) -> TunnelReader<'a,P,R> {
+ 
+  pub fn new(r : &'a mut R, buf : &'a mut [u8], p : &P,
+  headmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
+  contmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
+  ) -> TunnelReader<'a,P,R> {
+      let mut shad = p.get_shadower(false);
+      shad.set_mode(headmode);
+      let mut shacont = p.get_shadower(false);
+      shacont.set_mode(contmode);
     TunnelReader {
       rem_size : 0,
       buf: buf,
@@ -579,15 +574,15 @@ impl<'a, P : Peer, R : 'a + Read> TunnelReader<'a,P,R> {
     println!("tun mode : {:?}",tun_mode);
     match tun_mode {
        TunnelMode::NoTunnel => (), // nothing to read as header
-       TunnelMode::PublicTunnel(nbhop,ref headmode, ref contentmode) => {
+       TunnelMode::PublicTunnel(nbhop,ref mode) => {
          {
-           let tpi = if headmode != contentmode {
-             let mut shr = ShadowReadOnce::new(&mut self.shadow,&mut self.reader);
+           let tpi = if mode.is_het() {
+             let mut shr = new_shadow_read_once(&mut self.reader,&mut self.shadow);
              let tpi = try!(bin_decode(&mut shr, SizeLimit::Infinite).map_err(|e|BindErr(e)));
              try!(self.shacont.read_shadow_header(&mut shr));
              tpi
            } else {
-             let mut shr = ShadowReadOnce::new(&mut self.shacont,&mut self.reader);
+             let mut shr = new_shadow_read_once(&mut self.reader,&mut self.shacont);
              try!(bin_decode(&mut shr, SizeLimit::Infinite).map_err(|e|BindErr(e)))
            };
            self.proxyinfo = Some(tpi);
@@ -615,8 +610,8 @@ impl<'a, P : Peer, R : 'a + Read> Read for TunnelReader<'a,P,R> {
       Some(TunnelMode::NoTunnel) => {
         self.reader.read(buf)
       },
-      Some(TunnelMode::PublicTunnel(nbhop,ref contenthead, ref contentshad)) => {
-         self.shacont.read_shadow_iter(&mut self.reader, buf, contentshad)
+      Some(TunnelMode::PublicTunnel(nbhop,ref mode)) => {
+         self.shacont.read_shadow_iter(&mut self.reader, buf)
       },
       _ => {
         // TODO

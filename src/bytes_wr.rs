@@ -59,6 +59,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     const WRITE_SIZE : bool;
   }
 
+  #[derive(Clone)]
   pub struct SizedWindows<P : SizedWindowsParams>  {
     init_size : usize, // TODO rename to last_size
     winrem : usize,

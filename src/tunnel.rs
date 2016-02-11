@@ -1,5 +1,8 @@
 //! tunnel : primitive function for tunnel (for both modes
 //!
+//! TODO reader and writer with possible two different size limiter for het mode (head limiter
+//! should be small when content big or growable)
+//!
 
 use rand::thread_rng;
 use rand::Rng;
@@ -32,6 +35,22 @@ use std::io::{
   Error as IoError,
   ErrorKind as IoErrorKind,
 };
+use readwrite_comp::{
+  MultiW,
+  MultiWExt,
+  new_multiw,
+  ExtRead,
+  ExtWrite,
+  CompW,
+  CompWState,
+  CompR,
+  CompRState,
+  CompExtW,
+  CompExtWInner,
+  CompExtR,
+  CompExtRInner,
+};
+
 use mydhtresult::Error;
 
 //use std::marker::Reflect;
@@ -66,7 +85,7 @@ pub type TunnelID = usize;
 /// When a nb hop is in tunnel mode it could be changed or not be the same as the actual size : it
 /// is only an indication of the size to use to proxy query (or to reply for publicTunnel).
 pub enum TunnelMode {
-  NoTunnel,
+  NoTunnel, // TODO remove as in this case we use directly writer
   /// Tunnel using a single path (forward path = backward path). Parameter is number of hop in the
   /// tunnel (1 is direct).
   /// Error take tunnel backward (error is unencrypted (we do not know originator) and therefore
@@ -92,10 +111,11 @@ pub enum TunnelShadowMode {
   NoShadow,
   /// shadow all with full layer, in default mode 
   Full,
-  /// Dest key only encryption for content in default mode, header is layered fith headere in
+  /// Dest key only encryption for content in default mode, header is layered fith header in
   /// default mode, header is layered with header mode
   Last,
-  /// Same as last but header is using same shadower (default as content) 
+  /// Same as last but header is using same shadower (default as content) TODO for now not
+  /// implemented
   LastDefault,
 }
 
@@ -238,10 +258,117 @@ impl TunnelModeMsg {
   }
 }
 
+pub type TunnelReader<'a, 'b, E : ExtRead + 'b, P : Peer + 'b, R : 'a + Read> = CompR<'a,'b,R,TunnelReaderExt<E,P>>;
+/// a reader ext for a proxy payload. This is not using multiR (only one layer per peer, but we use a similar to TunnelShadow internal reader to allow it).
+/// TunnelWriter is simply a compw over R.
+/// The reader is not optimal : it use two read shadower one for content and one for header (it
+/// could only use one in most case but we do not know it beforer reading frame header).
+/// E is the frame limiter used (see bytes_wr).
+pub struct TunnelReaderExt<E : ExtRead, P : Peer> {
+  shadow: TunnelShadowR<E,P>, // our decoding
+  shacont: <P as Peer>::Shadow, // our decoding
+  shanocont: E, // for proxying
+  mode: TunnelMode,
+}
+impl<E : ExtRead, P : Peer> TunnelReaderExt<E, P> {
+  #[inline]
+  pub fn is_dest(&self) -> Option<bool> {
+    self.shadow.1.as_ref().map(|tpi|tpi.next_proxy_peer.is_none())
+  }
+  #[inline]
+  pub fn as_reader<'a,'b,R : Read>(&'b mut self, r : &'a mut R) -> TunnelReader<'a, 'b, E, P, R> {
+    CompR::new(r,self)
+  }
+} 
+impl<E : ExtRead + Clone, P : Peer> TunnelReaderExt<E, P> {
+  // new, if tunnel mode is already read or static it could be set but reader (from as_reader) could not be used
+  // afterward (it would read header again)).
+  pub fn new(p : &P, e : E, mode : Option<TunnelMode>) -> TunnelReaderExt<E, P> {
+    let mut s1 = p.get_shadower(false);
+    let mut s2 = p.get_shadower(false);
+    let m = mode.unwrap_or(TunnelMode::NoTunnel); // default to no tunnel
+
+    TunnelReaderExt {
+      shadow : TunnelShadowR(CompExtR(e.clone(),s1),None),
+      shacont : s2,
+      shanocont : e,
+      mode : m,
+    }
+  }
+}
+
+impl<E : ExtRead, P : Peer> ExtRead for TunnelReaderExt<E, P> {
+  #[inline]
+  fn read_header<R : Read>(&mut self, r : &mut R) -> Result<()> {
+    let tun_mode = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
+    println!("tun mode : {:?}",tun_mode);
+    match tun_mode {
+       TunnelMode::NoTunnel => self.shadow.1 = Some(TunnelProxyInfo {
+          next_proxy_peer : None,
+          tunnel_id : 0,
+          tunnel_id_failure : None,
+       }), // to be dest
+
+       _ => {
+        try!(self.shadow.read_header(r));
+        if tun_mode.is_het() {
+          if let Some(true) = self.is_dest() {
+            // try to read shacont header
+{            let mut inw  = CompExtRInner(r, &mut self.shadow);
+            try!(self.shacont.read_header(&mut inw)); }
+            try!(self.shadow.read_end(r));
+            try!(self.shanocont.read_header(r)); // header of stop for last only
+          }
+        };
+      }
+    };
+    self.mode = tun_mode;
+    Ok(())
+  }
+ 
+  #[inline]
+  fn read_from<R : Read>(&mut self, r : &mut R, buf: &mut [u8]) -> Result<usize> {
+    if let TunnelMode::NoTunnel = self.mode {
+      r.read(buf)
+    } else {
+    if self.mode.is_het() {
+      if let Some(true) = self.is_dest() {
+        let mut inw  = CompExtRInner(r, &mut self.shanocont);
+        self.shacont.read_from(&mut inw,buf)
+      } else {
+        // just read header (specific code for content in tunnel proxy function
+        self.shadow.read_from(r,buf)
+      }
+    } else {
+      self.shadow.read_from(r,buf)
+    }
+    }
+  }
+  #[inline]
+  fn read_end<R : Read>(&mut self, r : &mut R) -> Result<()> {
+    if let TunnelMode::NoTunnel = self.mode {
+    } else {
+    if self.mode.is_het() {
+      if let Some(true) = self.is_dest() {
+        {let mut inw  = CompExtRInner(r, &mut self.shanocont);
+        self.shacont.read_end(&mut inw);
+        }
+        self.shanocont.read_end(r);
+      } else {
+        self.shadow.read_end(r);
+       // self.shanocont.read_end(r);
+      }
+    } else {
+      self.shadow.read_end(r);
+    }
+    }
+    Ok(())
+  }
+}
 
 
 /// a reader for a proxy payload
-pub struct TunnelReader<'a, P : Peer, R : 'a + Read> {
+pub struct TunnelReaderExt2<'a, P : Peer, R : 'a + Read> {
   // payload remaining size
   rem_size : usize,
   buf: &'a mut [u8],
@@ -255,7 +382,7 @@ pub struct TunnelReader<'a, P : Peer, R : 'a + Read> {
 /// writer to encode for tunneling, it create the header and encode the content
 /// Note that all peers are of the same kind (same for shadow) as we currently support only one
 /// Peer in one dht (no fat pointer here)
-pub struct TunnelWriter<'a, P : Peer, W : 'a + Write> {
+pub struct TunnelWriterExt2<'a, P : Peer, W : 'a + Write> {
   buf: &'a mut [u8],
   bufix: usize,
   addrs: Vec<<P as Peer>::Address>, // of none it means that heading hasbeen sent otherwise it need to be sent
@@ -268,12 +395,241 @@ pub struct TunnelWriter<'a, P : Peer, W : 'a + Write> {
   sender: &'a mut W,
 }
 
+
+pub type TunnelWriter<'a, 'b, E : ExtWrite + 'b, P : Peer + 'b, W : 'a + Write> = CompW<'a,'b,W,TunnelWriterExt<E,P>>;
+pub struct TunnelWriterExt<E : ExtWrite, P : Peer> {
+  shads: MultiWExt<TunnelShadowW<E,P>>,
+  shacont: Option<CompExtW<<P as Peer>::Shadow,E>>, // shadow for content when heterogenous enc and last : the reader need to know the size of its content but E is external
+  error: Option<usize>, // possible error hop to report
+  mode: TunnelMode,
+}
+impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
+  #[inline]
+  pub fn as_writer<'a,'b,W : Write>(&'b mut self, w : &'a mut W) -> TunnelWriter<'a, 'b, E, P, W> {
+    CompW::new(w,self)
+  }
+  // new
+  pub fn new(peers : &[&P], e : E, mode : TunnelMode, error : Option<usize>, 
+    headmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
+    contmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
+  ) -> TunnelWriterExt<E, P> {
+  
+    let nbpeer = peers.len();
+    let mut shad = Vec::with_capacity(nbpeer - 1);
+
+    if let TunnelMode::NoTunnel = mode {
+      // no shadow
+    } else {
+      let mut thrng = thread_rng();
+      let mut geniter = thrng.gen_iter();
+      let mut next_proxy_peer = None;
+
+println!("in {}", peers.len());
+      for i in  (1 .. peers.len()).rev() { // do not add first (is origin)
+println!("in + {}", i);
+        let p = peers.get(i).unwrap();
+println!("inbis");
+        let tpi = TunnelProxyInfo {
+          next_proxy_peer : next_proxy_peer,
+          tunnel_id : geniter.next().unwrap(),
+          tunnel_id_failure : None, // if set that is a failure
+        };
+        next_proxy_peer = Some(p.to_address());
+        let mut s = p.get_shadower(true);
+        if mode.is_het() {
+          s.set_mode(headmode.clone());
+        } else {
+          s.set_mode(contmode.clone());
+        }
+        shad.push(TunnelShadowW(CompExtW(e.clone(),s), tpi));
+println!("push");
+      }
+    }
+    let shacont = if mode.is_het() {
+      peers.last().map(|p|{
+        let mut s = p.get_shadower(true);
+        s.set_mode(contmode.clone());
+        CompExtW(s,e.clone())
+      })
+    } else {
+      None
+    };
+    TunnelWriterExt {
+      shads : MultiWExt::new(shad),
+      shacont : shacont,
+      error: error,
+      mode: mode,
+    }
+  }
+}
+
+impl<E : ExtWrite, P : Peer> ExtWrite for TunnelWriterExt<E, P> {
+  #[inline]
+  fn write_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    try!(bin_encode(&self.mode, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    if let TunnelMode::NoTunnel = self.mode {
+      Ok(())
+    } else {
+    try!(self.shads.write_header(w));
+    match self.shacont.as_mut() {
+      Some (s) => {
+        { // cont enc header
+          let mut inw  = CompExtWInner(w, &mut self.shads);
+          try!(s.0.write_header(&mut inw)); // enc header readable only for dest
+        }
+        try!(self.shads.write_end(w));
+        try!(self.shads.flush_into(w));
+        try!(s.1.write_header(w)); // end header readable for proxy
+      }
+      None => (),
+    }
+    Ok(())
+    }
+  }
+  #[inline]
+  fn write_into<W : Write>(&mut self, w : &mut W, cont: &[u8]) -> Result<usize> {
+    if let TunnelMode::NoTunnel = self.mode {
+      w.write(cont)
+    } else {
+    match self.shacont.as_mut() {
+      Some (s) => s.write_into(w,cont),
+      None => self.shads.write_into(w,cont),
+    }
+    }
+  }
+  #[inline]
+  fn flush_into<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    if let TunnelMode::NoTunnel = self.mode {
+      Ok(())
+    } else {
+    match self.shacont.as_mut() {
+      Some (s) => s.flush_into(w),
+      None => self.shads.flush_into(w),
+    }
+    }
+  }
+  #[inline]
+  fn write_end<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    if let TunnelMode::NoTunnel = self.mode {
+      Ok(())
+    } else {
+    match self.shacont.as_mut() {
+      Some (s) => s.write_end(w),
+      None => self.shads.write_end(w),
+    }
+    }
+  }
+}
+
+/// override shadow for tunnel with custom ExtRead and ExtWrite over Shadow
+/// First ExtWrite is bytes_wr to use for proxying content (get end of encoded stream).
+pub struct TunnelShadowW<E : ExtWrite, P : Peer> (pub CompExtW<E,<P as Peer>::Shadow>, pub TunnelProxyInfo<P>);
+
+pub struct TunnelShadowR<E : ExtRead, P : Peer> (pub CompExtR<E,<P as Peer>::Shadow>, pub Option<TunnelProxyInfo<P>>);
+
+impl<E : ExtWrite, P : Peer> ExtWrite for TunnelShadowW<E,P> {
+  #[inline]
+  fn write_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    try!(self.0.write_header(w));
+    let mut inw  = CompExtWInner(w, &mut self.0);
+    try!(bin_encode(&self.1, &mut inw, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    Ok(())
+  }
+  #[inline]
+  fn write_into<W : Write>(&mut self, w : &mut W, cont : &[u8]) -> Result<usize> {
+    self.0.write_into(w,cont)
+  }   
+  #[inline]
+  fn flush_into<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    self.0.flush_into(w)
+  }
+  #[inline]
+  fn write_end<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    self.0.write_end(w)
+  }
+}
+
+impl<E : ExtRead, P : Peer> ExtRead for TunnelShadowR<E,P> {
+  #[inline]
+  fn read_header<R : Read>(&mut self, r : &mut R) -> Result<()> {
+    try!(self.0.read_header(r));
+    let mut inr  = CompExtRInner(r, &mut self.0);
+    let tpi : TunnelProxyInfo<P> = try!(bin_decode(&mut inr, SizeLimit::Infinite).map_err(|e|BindErr(e)));
+    self.1 = Some(tpi);
+    Ok(())
+  }
+  #[inline]
+  fn read_from<R : Read>(&mut self, r : &mut R, buf: &mut [u8]) -> Result<usize> {
+    self.0.read_from(r,buf)
+  }
+  #[inline]
+  fn read_end<R : Read>(&mut self, r : &mut R) -> Result<()> {
+    self.0.read_end(r)
+  }
+}
+
+ 
 /// iterate on it to empty reader into sender  and flush with additional content (shadow is same kind for reader (ourself) and dest as a tunnel is
 /// using only on kind).
 ///(do not write header and behave according to mode)
-/// Primitive to proxy (could be simple function)
-pub struct TunnelProxy<'a, P : Peer, W : 'a + Write, R : 'a + Read> {
-  inner : &'a mut TunnelReader<'a,P,R>,
+/// Primitive to proxy (could be simple function).
+/// TunnelReaderExt must have already read its header from R (otherwhise it is unknow if we can
+/// proxy or not).
+/// TODO er and ew are used only for het, maybe split function in two.
+pub fn proxy_content<
+  P : Peer,
+  ER : ExtRead,
+  R : Read,
+  EW : ExtWrite,
+  W : Write> ( 
+  buf : &mut [u8], 
+  tre : &mut TunnelReaderExt<ER,P>,
+  mut er : ER,
+  mut ew : EW,
+  r : &mut R,
+  w : &mut W) -> Result<()> {
+    {
+//    try!(tw.write_header(w));
+    let mut sr = 1;
+    while sr != 0 {
+      sr = try!(tre.read_from(r, buf));
+      let mut sw = sr;
+      while sw > 0 {
+        sw = try!(w.write(&buf[..sr]));
+        if sw == 0 {
+          return Err(IoError::new(IoErrorKind::Other, "Proxying failed, it seems we do not write all content"));
+        }
+      }
+    }
+    try!(tre.read_end(r));
+    }
+    // for het we only proxied the layered header : need to proxy the payload (end write of one
+    // terminal shadow) : we read with end handling and write with same end handling
+    if tre.mode.is_het() {
+      try!(er.read_header(r));
+      try!(ew.write_header(w));
+      let mut sr = 1;
+      while sr != 0 {
+        sr = try!(er.read_from(r, buf));
+        let mut sw = sr;
+        while sw > 0 {
+          sw = try!(ew.write_into(w,&buf[..sr]));
+          if sw == 0 {
+            return Err(IoError::new(IoErrorKind::Other, "Proxying failed, it seems we do not write all content"));
+          }
+        }
+      }
+      try!(er.read_end(r));
+      try!(ew.write_end(w));
+      try!(ew.flush_into(w));
+    }
+
+  Ok(())
+}
+
+
+pub struct TunnelProxyExt2<'a, P : Peer, W : 'a + Write, R : 'a + Read> {
+  inner : &'a mut TunnelReaderExt2<'a,P,R>,
 //  shad :  <P as Peer>::Shadow, // shadow for write not needed for now
   buf: &'a mut [u8],
   modewritten : bool,
@@ -281,9 +637,9 @@ pub struct TunnelProxy<'a, P : Peer, W : 'a + Write, R : 'a + Read> {
 }
 
 
-impl<'a, P : Peer, W : 'a + Write, R : 'a + Read> TunnelProxy<'a, P, W, R> {
-  pub fn new(r : &'a mut TunnelReader<'a,P,R>, buf : &'a mut [u8], s : &'a mut W) -> Self {
-    TunnelProxy {
+impl<'a, P : Peer, W : 'a + Write, R : 'a + Read> TunnelProxyExt2<'a, P, W, R> {
+  pub fn new(r : &'a mut TunnelReaderExt2<'a,P,R>, buf : &'a mut [u8], s : &'a mut W) -> Self {
+    TunnelProxyExt2 {
       inner : r,
       buf : buf,
       modewritten : false,
@@ -334,9 +690,9 @@ impl<'a, P : Peer, W : 'a + Write, R : 'a + Read> TunnelProxy<'a, P, W, R> {
 // - mode : TunnelMode
 // - the actual writer (transport most of the time as a mutable reference)
 
-impl<'a, P : Peer, W : 'a + Write> TunnelWriter<'a, P, W> {
+impl<'a, P : Peer, W : 'a + Write> TunnelWriterExt2<'a, P, W> {
 
-/*  pub fn new_test(peers : &[&P], mode : TunnelMode<<<P as Peer>::Shadow as Shadow>::ShadowMode>, sender : &'a mut W) -> Option<TunnelWriter<'a, P, W>> {
+/*  pub fn new_test(peers : &[&P], mode : TunnelMode<<<P as Peer>::Shadow as Shadow>::ShadowMode>, sender : &'a mut W) -> Option<TunnelWriterExt2<'a, P, W>> {
     let swol = match mode.get_head_mode() {
       Some(m) => {
         let mut res = ShadowWriteOnceL::new(peers[peers.len() - 1].get_shadower(true),sender, m.clone(), true);
@@ -354,7 +710,7 @@ impl<'a, P : Peer, W : 'a + Write> TunnelWriter<'a, P, W> {
   pub fn new(peers : &[&P], mode : TunnelMode, buf : &'a mut [u8], sender : &'a mut W, error : Option<usize>, 
   headmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
   contmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
-) -> TunnelWriter<'a, P, W> {
+) -> TunnelWriterExt2<'a, P, W> {
     let nbpeer = peers.len();
     let mut addr = Vec::with_capacity(nbpeer);
     let mut shad = Vec::with_capacity(nbpeer);
@@ -384,7 +740,7 @@ impl<'a, P : Peer, W : 'a + Write> TunnelWriter<'a, P, W> {
     } else {
       None
     };
-    TunnelWriter {
+    TunnelWriterExt2 {
       buf: buf,
       bufix: 0,
       hasheader: false,
@@ -400,13 +756,13 @@ impl<'a, P : Peer, W : 'a + Write> TunnelWriter<'a, P, W> {
 }
 
 // impl write
-impl<'a, P : Peer, W : 'a + Write> Write for TunnelWriter<'a, P, W> {
+impl<'a, P : Peer, W : 'a + Write> Write for TunnelWriterExt2<'a, P, W> {
 
   fn write(&mut self, cont: &[u8]) -> Result<usize> {
     // first frame : header
     if !self.hasheader {
       // pattern match here to avoid self lifetime constraint
-      let &mut TunnelWriter {
+      let &mut TunnelWriterExt2 {
             buf: _,
             bufix: _,
             hasheader: _,
@@ -543,17 +899,17 @@ impl<'a, P : Peer, W : 'a + Write> Write for TunnelWriter<'a, P, W> {
 }
 
 // create a tunnel reader : use PeerTest (currently using NoShadow...)
-impl<'a, P : Peer, R : 'a + Read> TunnelReader<'a,P,R> {
+impl<'a, P : Peer, R : 'a + Read> TunnelReaderExt2<'a,P,R> {
  
   pub fn new(r : &'a mut R, buf : &'a mut [u8], p : &P,
   headmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
   contmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
-  ) -> TunnelReader<'a,P,R> {
+  ) -> TunnelReaderExt2<'a,P,R> {
       let mut shad = p.get_shadower(false);
       shad.set_mode(headmode);
       let mut shacont = p.get_shadower(false);
       shacont.set_mode(contmode);
-    TunnelReader {
+    TunnelReaderExt2 {
       rem_size : 0,
       buf: buf,
       mode: None,
@@ -600,7 +956,7 @@ impl<'a, P : Peer, R : 'a + Read> TunnelReader<'a,P,R> {
 
 
 // impl read
-impl<'a, P : Peer, R : 'a + Read> Read for TunnelReader<'a,P,R> {
+impl<'a, P : Peer, R : 'a + Read> Read for TunnelReaderExt2<'a,P,R> {
   /// to init frame just read on null buffer (allow subsequent read if terminal)
   fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
     if self.mode.is_none() {

@@ -171,59 +171,6 @@ pub struct TunnelProxyInfoSend<'a, P : Peer> {
 }
 
 
-/*
-impl<P : Peer> TunnelProxyInfo<P> {
-  fn write_as_bytes<W:Write> (&self, w : &mut W) -> Result<()> {
-    match self.next_proxy_peer {
-      Some(ref add) => {
-        try!(w.write(&[1]));
-        try!(bin_encode(add, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
-      },
-      None => {
-        try!(w.write(&[0]));
-      },
-    };
-    try!(w.write_u64::<LittleEndian>(self.tunnel_id as u64));
-    match self.tunnel_id_failure {
-      Some(idf) => {
-        try!(w.write(&[1]));
-        try!(w.write_u64::<LittleEndian>(idf as u64));
-      },
-      None => {
-        try!(w.write(&[0]));
-      },
-    };
-    Ok(())
-  }
-
-  fn read_as_bytes<R:Read> (r : &mut R) -> Result<Self> {
-    let mut buf = [0];
-    let obuff = &mut buf[..];
-    try!(r.read(obuff));
-    let npp = if obuff[0] == 1 {
-//      let add = try!(<P as Peer>::Address::read_as_bytes(r));
-      let add = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
-      Some(add)
-    } else {
-      None
-    };
-    let tuid = try!(r.read_u64::<LittleEndian>());
-    try!(r.read(obuff));
-    let tif = if obuff[0] == 1 {
-      let fid = try!(r.read_u64::<LittleEndian>());
-      Some(fid as usize)
-    } else {
-      None
-    };
-    Ok(TunnelProxyInfo {
-      next_proxy_peer : npp,
-      tunnel_id : tuid as usize,
-      tunnel_id_failure : tif,
-    })
-  }
-
-}*/
-
 impl TunnelModeMsg {
   /// get corresponding querymode
   pub fn get_mode (&self) -> TunnelMode {
@@ -289,7 +236,7 @@ impl<E : ExtRead + Clone, P : Peer> TunnelReaderExt<E, P> {
     let m = mode.unwrap_or(TunnelMode::NoTunnel); // default to no tunnel
 
     TunnelReaderExt {
-      shadow : TunnelShadowR(CompExtR(e.clone(),s1),None),
+      shadow : TunnelShadowR(CompExtR(s1,e.clone()),None),
       shacont : s2,
       shanocont : e,
       mode : m,
@@ -310,13 +257,18 @@ impl<E : ExtRead, P : Peer> ExtRead for TunnelReaderExt<E, P> {
        }), // to be dest
 
        _ => {
+         println!("bef shad head");
         try!(self.shadow.read_header(r));
+         println!("aft shad head");
         if tun_mode.is_het() {
           if let Some(true) = self.is_dest() {
             // try to read shacont header
-{            let mut inw  = CompExtRInner(r, &mut self.shadow);
+          { let mut inw  = CompExtRInner(r, &mut self.shadow);
+            println!("shacont read x");
             try!(self.shacont.read_header(&mut inw)); }
+            println!("shacont read xx");
             try!(self.shadow.read_end(r));
+            println!("shacont read xx ennd ok");
             try!(self.shanocont.read_header(r)); // header of stop for last only
           }
         };
@@ -367,38 +319,10 @@ impl<E : ExtRead, P : Peer> ExtRead for TunnelReaderExt<E, P> {
 }
 
 
-/// a reader for a proxy payload
-pub struct TunnelReaderExt2<'a, P : Peer, R : 'a + Read> {
-  // payload remaining size
-  rem_size : usize,
-  buf: &'a mut [u8],
-  mode: Option<TunnelMode>, // mode is read from first frame TODO remove as it is done by CompR state
-  shadow: <P as Peer>::Shadow, // our decoding
-  shacont: <P as Peer>::Shadow, // our decoding for corntent if het
-  reader: &'a mut R,
-  proxyinfo : Option<TunnelProxyInfo<P>>, // is initialized after first read
-}
-
-/// writer to encode for tunneling, it create the header and encode the content
-/// Note that all peers are of the same kind (same for shadow) as we currently support only one
-/// Peer in one dht (no fat pointer here)
-pub struct TunnelWriterExt2<'a, P : Peer, W : 'a + Write> {
-  buf: &'a mut [u8],
-  bufix: usize,
-  addrs: Vec<<P as Peer>::Address>, // of none it means that heading hasbeen sent otherwise it need to be sent
-  shads: Vec<<P as Peer>::Shadow>, // of none it means that heading hasbeen sent otherwise it need to be sent
-  shacont: Option<<P as Peer>::Shadow>, // shadow for content when heterogenous enc
-  hopids: Vec<usize>, // Id of all hop to report error
-  error: Option<usize>, // possible error hop to report
-  hasheader: bool,
-  mode: TunnelMode,
-  sender: &'a mut W,
-}
-
 
 pub type TunnelWriter<'a, 'b, E : ExtWrite + 'b, P : Peer + 'b, W : 'a + Write> = CompW<'a,'b,W,TunnelWriterExt<E,P>>;
 pub struct TunnelWriterExt<E : ExtWrite, P : Peer> {
-  shads: MultiWExt<TunnelShadowW<E,P>>,
+  shads: CompExtW<MultiWExt<TunnelShadowW<P>>,E>,
   shacont: Option<CompExtW<<P as Peer>::Shadow,E>>, // shadow for content when heterogenous enc and last : the reader need to know the size of its content but E is external
   error: Option<usize>, // possible error hop to report
   mode: TunnelMode,
@@ -441,7 +365,7 @@ println!("inbis");
         } else {
           s.set_mode(contmode.clone());
         }
-        shad.push(TunnelShadowW(CompExtW(e.clone(),s), tpi));
+        shad.push(TunnelShadowW(s, tpi));
 println!("push");
       }
     }
@@ -455,7 +379,7 @@ println!("push");
       None
     };
     TunnelWriterExt {
-      shads : MultiWExt::new(shad),
+      shads : CompExtW(MultiWExt::new(shad),e.clone()),
       shacont : shacont,
       error: error,
       mode: mode,
@@ -523,11 +447,11 @@ impl<E : ExtWrite, P : Peer> ExtWrite for TunnelWriterExt<E, P> {
 
 /// override shadow for tunnel with custom ExtRead and ExtWrite over Shadow
 /// First ExtWrite is bytes_wr to use for proxying content (get end of encoded stream).
-pub struct TunnelShadowW<E : ExtWrite, P : Peer> (pub CompExtW<E,<P as Peer>::Shadow>, pub TunnelProxyInfo<P>);
+pub struct TunnelShadowW<P : Peer> (pub <P as Peer>::Shadow, pub TunnelProxyInfo<P>);
+//pub struct TunnelShadowW<E : ExtWrite, P : Peer> (pub CompExtW<E,<P as Peer>::Shadow>, pub TunnelProxyInfo<P>);
+pub struct TunnelShadowR<E : ExtRead, P : Peer> (pub CompExtR<<P as Peer>::Shadow,E>, pub Option<TunnelProxyInfo<P>>);
 
-pub struct TunnelShadowR<E : ExtRead, P : Peer> (pub CompExtR<E,<P as Peer>::Shadow>, pub Option<TunnelProxyInfo<P>>);
-
-impl<E : ExtWrite, P : Peer> ExtWrite for TunnelShadowW<E,P> {
+impl<P : Peer> ExtWrite for TunnelShadowW<P> {
   #[inline]
   fn write_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
     try!(self.0.write_header(w));
@@ -554,7 +478,12 @@ impl<E : ExtRead, P : Peer> ExtRead for TunnelShadowR<E,P> {
   fn read_header<R : Read>(&mut self, r : &mut R) -> Result<()> {
     try!(self.0.read_header(r));
     let mut inr  = CompExtRInner(r, &mut self.0);
+/*    println!("bef read tpi");
+    let mut buf = vec![0;10];
+    inr.read(&mut buf[..]);
+    println!("debug : buf {:?}", &buf[..]);*/
     let tpi : TunnelProxyInfo<P> = try!(bin_decode(&mut inr, SizeLimit::Infinite).map_err(|e|BindErr(e)));
+    println!("aft read tpi");
     self.1 = Some(tpi);
     Ok(())
   }
@@ -585,24 +514,29 @@ pub fn proxy_content<
   buf : &mut [u8], 
   tre : &mut TunnelReaderExt<ER,P>,
   mut er : ER,
+  mut eproxy: EW,
   mut ew : EW,
   r : &mut R,
   w : &mut W) -> Result<()> {
     {
-//    try!(tw.write_header(w));
+    try!(bin_encode(&tre.mode, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    try!(eproxy.write_header(w));
     let mut sr = 1;
     while sr != 0 {
       sr = try!(tre.read_from(r, buf));
-      let mut sw = sr;
-      while sw > 0 {
-        sw = try!(w.write(&buf[..sr]));
-        if sw == 0 {
+      let mut sw = 0;
+      while sw < sr {
+        let ssw = try!(eproxy.write_into(w,&buf[sw..sr - sw]));
+        if ssw == 0 {
           return Err(IoError::new(IoErrorKind::Other, "Proxying failed, it seems we do not write all content"));
         }
+        sw += ssw;
       }
     }
     try!(tre.read_end(r));
     }
+    try!(eproxy.write_end(w));
+    try!(eproxy.flush_into(w));
     // for het we only proxied the layered header : need to proxy the payload (end write of one
     // terminal shadow) : we read with end handling and write with same end handling
     if tre.mode.is_het() {
@@ -611,12 +545,13 @@ pub fn proxy_content<
       let mut sr = 1;
       while sr != 0 {
         sr = try!(er.read_from(r, buf));
-        let mut sw = sr;
-        while sw > 0 {
-          sw = try!(ew.write_into(w,&buf[..sr]));
-          if sw == 0 {
+        let mut sw = 0;
+        while sw < sr {
+          let ssw = try!(ew.write_into(w,&buf[sw..sr - sw]));
+          if ssw == 0 {
             return Err(IoError::new(IoErrorKind::Other, "Proxying failed, it seems we do not write all content"));
           }
+          sw += ssw;
         }
       }
       try!(er.read_end(r));
@@ -628,356 +563,11 @@ pub fn proxy_content<
 }
 
 
-pub struct TunnelProxyExt2<'a, P : Peer, W : 'a + Write, R : 'a + Read> {
-  inner : &'a mut TunnelReaderExt2<'a,P,R>,
-//  shad :  <P as Peer>::Shadow, // shadow for write not needed for now
-  buf: &'a mut [u8],
-  modewritten : bool,
-  sender: &'a mut W,
-}
-
-
-impl<'a, P : Peer, W : 'a + Write, R : 'a + Read> TunnelProxyExt2<'a, P, W, R> {
-  pub fn new(r : &'a mut TunnelReaderExt2<'a,P,R>, buf : &'a mut [u8], s : &'a mut W) -> Self {
-    TunnelProxyExt2 {
-      inner : r,
-      buf : buf,
-      modewritten : false,
-      sender : s,
-    }
-  }
-
-  /// iterate on it to empty reader into sender  and flush with additional content (shadow is same kind for reader (ourself) and dest as a tunnel is
-  /// using only on kind).
-  ///(do not write header and behave according to mode)
-  /// Primitive to proxy (could be simple function).
-  pub fn tunnel_proxy(&mut self) -> Result<usize> {
-    if self.inner.mode.is_none() {
-      try!(self.inner.init_read());
-    }
-    match &self.inner.mode {
-      &Some(TunnelMode::NoTunnel) => {
-        // imediatly after header the content enc only with dest
-        let ix = try!(self.inner.reader.read(self.buf));
-        println!("prox:{:?}",&self.buf[..ix]);
-        let wix = try!(self.sender.write(&self.buf[..ix]));
-        assert!(wix == ix); // or loop if needed
-        Ok(wix)
-
-      },
-      &Some(TunnelMode::PublicTunnel(nbhop,ref tsmode)) => {
-        if !self.modewritten {
-          try!(bin_encode(&self.inner.mode.as_ref().unwrap(), self.sender, SizeLimit::Infinite).map_err(|e|BincErr(e)));
-          self.modewritten = true;
-        }
-        let ix = try!(self.inner.reader.read(self.buf));
-        let wix = try!(self.sender.write(&self.buf[..ix]));
-        assert!(wix == ix); // or loop if needed
-        Ok(wix)
-
-      },
-      _ => {
-        // TODO
-        panic!("todo");
-      },
-    }
-
-  }
-}
 
 // create a tunnel writter
 // - list of peers (last one is dest)
 // - mode : TunnelMode
 // - the actual writer (transport most of the time as a mutable reference)
-
-impl<'a, P : Peer, W : 'a + Write> TunnelWriterExt2<'a, P, W> {
-
-/*  pub fn new_test(peers : &[&P], mode : TunnelMode<<<P as Peer>::Shadow as Shadow>::ShadowMode>, sender : &'a mut W) -> Option<TunnelWriterExt2<'a, P, W>> {
-    let swol = match mode.get_head_mode() {
-      Some(m) => {
-        let mut res = ShadowWriteOnceL::new(peers[peers.len() - 1].get_shadower(true),sender, m.clone(), true);
-        for i in peers.len() - 1 .. 0 {
-  
-        }
-        Some(res)
-      },
-      None => {
-        None // TODO enum with single write also : simple shadow
-      }
-    };
-    None
-  }*/
-  pub fn new(peers : &[&P], mode : TunnelMode, buf : &'a mut [u8], sender : &'a mut W, error : Option<usize>, 
-  headmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
-  contmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
-) -> TunnelWriterExt2<'a, P, W> {
-    let nbpeer = peers.len();
-    let mut addr = Vec::with_capacity(nbpeer);
-    let mut shad = Vec::with_capacity(nbpeer);
-    let mut hopids = Vec::with_capacity(nbpeer);
-    let mut thrng = thread_rng();
-    let mut geniter = thrng.gen_iter();
-
-    if let TunnelShadowMode::NoShadow = mode.tunnel_shadow_mode() {
-      for p in peers {
-        addr.push(p.to_address());
-        let mut s = p.get_shadower(true);
-        if mode.is_het() {
-          s.set_mode(headmode.clone());
-        } else {
-          s.set_mode(contmode.clone());
-        }
-        shad.push(s);
-        hopids.push(geniter.next().unwrap());
-      }
-    }
-    let shacont = if mode.is_het() {
-      peers.get(peers.len() -1).map(|p|{
-        let mut s = p.get_shadower(true);
-        s.set_mode(contmode.clone());
-        s
-      })
-    } else {
-      None
-    };
-    TunnelWriterExt2 {
-      buf: buf,
-      bufix: 0,
-      hasheader: false,
-      addrs: addr,
-      shads: shad,
-      mode: mode.clone(),
-      shacont : shacont,
-      sender: sender,
-      error: error,
-      hopids: hopids,
-    }
-  }
-}
-
-// impl write
-impl<'a, P : Peer, W : 'a + Write> Write for TunnelWriterExt2<'a, P, W> {
-
-  fn write(&mut self, cont: &[u8]) -> Result<usize> {
-    // first frame : header
-    if !self.hasheader {
-      // pattern match here to avoid self lifetime constraint
-      let &mut TunnelWriterExt2 {
-            buf: _,
-            bufix: _,
-            hasheader: _,
-            addrs: ref mut addrs,
-            shads: ref mut shads,
-            mode: ref mode,
-            shacont : ref mut shacont,
-            sender: ref mut sender,
-            error: ref mut error,
-            hopids: ref mut hopids,
-      } = self;
-
-      try!(bin_encode(mode, sender, SizeLimit::Infinite).map_err(|e|BincErr(e)));
-
-      match &self.mode.clone() {
-        &TunnelMode::NoTunnel => (),
-        &TunnelMode::PublicTunnel(_,ref mode) => {
-
-          let mut i = 0;
-          // write proxy infos skip first (origin)
-          let init : Result<(usize,Option<&mut Write>,Option<ShadowWriteOnceL<<P as Peer>::Shadow>>)> = Ok((i,Some(sender),None));
-          try!(shads.iter_mut().fold(init,|pr, sha| match pr {
-         e@Err(_) => e,
-         Ok((i,ow,olw)) => {
-//           let mut fw = None;
-         if i != 0 {
-            let tunid = hopids[i];
-            let npi = if i == addrs.len() - 1 {
-              None
-            } else {
-            let add = addrs.get(i + 1).unwrap();
-              Some(add)
-            };
-//            add.write_as_bytes(&mut shw).unwrap();
-            let tpi : TunnelProxyInfoSend<P> = TunnelProxyInfoSend {
-              next_proxy_peer : npi,
-              tunnel_id : tunid.clone(), // tunnelId change for every hop TODO see if ref in proxy send
-              tunnel_id_failure : error.clone(), // if set that is a failure TODO see if ref in proxy send
-            };
-
-/*            let mut shw = if ow.is_some() {
-              ShadowWriteOnceL::new(sha,ow.unwrap(),headmode,true)
-            } else {
-              assert!(olw.is_some()); // or algo wrong
-              ShadowWriteOnceL::new(sha,olw.as_mut().unwrap(),headmode,false)
-            };
-
-            try!(bin_encode(&tpi, &mut shw, SizeLimit::Infinite).map_err(|e|BincErr(e)));
-
-            // write content shad head if needed (encoded)
-            if npi.is_none() {
-              match shacont {
-                &mut Some(ref mut s) => { 
-                  try!(s.shadow_header(&mut shw, contentmode)); // shadow header is encrypted
-                  try!(shw.flush());
-                },
-                _ => (),
-              }
-            } else {
-              try!(shw.flush());
-            };
-            fw = Some(shw);
-
-//            panic!("lifetime issue shw is linked to 410");
-// TODO uncoment           oshw = Some(&mut shw);
-        }
-        Ok((i + 1, None, fw))*/
-         }
-        Ok((i,ow,olw))
-        },
-          }));
-        },
-        &TunnelMode::Tunnel(_,ref mode) => {
-          panic!("unimplemented tunnelmode");
-//          let hops = 
-        },
-        &TunnelMode::BiTunnel(_,ref errorasfwd,ref mode) => {
-          panic!("unimplemented tunnelmode");
-        },
-      }
-
-
-
-      self.hasheader = true;
-    }
-
-    // actual write
-    match self.mode {
-      TunnelMode::NoTunnel => {
-        self.sender.write(cont)
-      },
-      TunnelMode::PublicTunnel(_,ref mode) => {
-        // write cont non layered (public actually only non layered)
-        match &mut self.shacont {
-          &mut Some(ref mut s) => s.shadow_iter(cont, self.sender),
-          _ => {
-            let mut sha = self.shads.get_mut(self.addrs.len() - 1).unwrap();
-            sha.shadow_iter(cont, self.sender)
-          },
-        }
-
-        
-      },
- 
-      _ => {
-        panic!("unimplemented tunnelmode");
-      },
- 
-    }
-
-  }
-
-  fn flush(&mut self) -> Result<()> {
-    match self.mode {
-      TunnelMode::NoTunnel => {
-      },
-      TunnelMode::PublicTunnel(_,ref mode) => {
-        // write cont non layered (public actually only non layered)
-        let mut sha = self.shads.get_mut(self.addrs.len() - 1).unwrap();
-        try!(sha.shadow_flush(self.sender));
-      },
-      _ => {
-        //  write backroute for last hop only (on each proxy back is appended)
-        panic!("unimplemented tunnelmode");
-      },
- 
-    }
-
-    // rewrite header next time
-    self.hasheader = false;
-    self.sender.flush()
-  }
-
-}
-
-// create a tunnel reader : use PeerTest (currently using NoShadow...)
-impl<'a, P : Peer, R : 'a + Read> TunnelReaderExt2<'a,P,R> {
- 
-  pub fn new(r : &'a mut R, buf : &'a mut [u8], p : &P,
-  headmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
-  contmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
-  ) -> TunnelReaderExt2<'a,P,R> {
-      let mut shad = p.get_shadower(false);
-      shad.set_mode(headmode);
-      let mut shacont = p.get_shadower(false);
-      shacont.set_mode(contmode);
-    TunnelReaderExt2 {
-      rem_size : 0,
-      buf: buf,
-      mode: None,
-      shadow: shad, // our decoding
-      shacont: shacont, // our decoding
-      reader: r,
-      proxyinfo : None,
-    }
-  }
-  pub fn is_dest(&self) -> Option<bool> {
-    if self.mode == Some(TunnelMode::NoTunnel) {
-      return Some(true)
-    }
-    self.proxyinfo.as_ref().map(|pi|pi.next_proxy_peer.is_none())
-  }
-  pub fn init_read(&mut self) -> Result<()> {
-    let tun_mode = try!(bin_decode(&mut self.reader, SizeLimit::Infinite).map_err(|e|BindErr(e)));
-    println!("tun mode : {:?}",tun_mode);
-    match tun_mode {
-       TunnelMode::NoTunnel => (), // nothing to read as header
-       TunnelMode::PublicTunnel(nbhop,ref mode) => {
-         {
-           let tpi = if mode.is_het() {
-             let mut shr = new_shadow_read_once(&mut self.reader,&mut self.shadow);
-             let tpi = try!(bin_decode(&mut shr, SizeLimit::Infinite).map_err(|e|BindErr(e)));
-             try!(self.shacont.read_shadow_header(&mut shr));
-             tpi
-           } else {
-             let mut shr = new_shadow_read_once(&mut self.reader,&mut self.shacont);
-             try!(bin_decode(&mut shr, SizeLimit::Infinite).map_err(|e|BindErr(e)))
-           };
-           self.proxyinfo = Some(tpi);
-         }
-       },
-       _ => {
-        panic!("todo");
-       },
-      }
-      self.mode = Some(tun_mode);
-      Ok(())
-  }
-
-}
-
-
-// impl read
-impl<'a, P : Peer, R : 'a + Read> Read for TunnelReaderExt2<'a,P,R> {
-  /// to init frame just read on null buffer (allow subsequent read if terminal)
-  fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-    if self.mode.is_none() {
-      try!(self.init_read());
-    }
-    match self.mode {
-      Some(TunnelMode::NoTunnel) => {
-        self.reader.read(buf)
-      },
-      Some(TunnelMode::PublicTunnel(nbhop,ref mode)) => {
-         self.shacont.read_shadow_iter(&mut self.reader, buf)
-      },
-      _ => {
-        // TODO
-        panic!("todo");
-      },
-    }
-
-  }
-}
-
 
 
 // test multiple tunnel (one hop) between two thread (similar to real world)

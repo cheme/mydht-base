@@ -19,6 +19,7 @@ use readwrite_comp::{
 };
 
 
+
 //pub type ShadowWriteOnce<'a, S : 'a + Shadow, W : 'a + Write> = CompW<'a, 'a, W , S>;
 pub type BytesW<'a, W : 'a + Write, BW : 'a + ExtWrite> = CompW<'a, 'a, W , BW>;
 pub type BytesR<'a, R : 'a + Read, BR : 'a + ExtRead> = CompR<'a, 'a, R , BR>;
@@ -34,6 +35,8 @@ pub fn new_bytes_r<'a, R : Read, BR : ExtRead>(br : &'a mut BR, r : &'a mut R) -
 /// another window
 pub mod sized_windows {
 
+use rand::OsRng;
+use rand::Rng;
 use std::io::{
   Write,
   Read,
@@ -57,6 +60,8 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     /// size of window is written, this way INIT_size and growth_ratio may diverge (multiple
     /// profiles)
     const WRITE_SIZE : bool;
+    /// could disable random padding, default to enable for sec consideration
+    const SECURE_PAD : bool = true;
   }
 
   #[derive(Clone)]
@@ -75,6 +80,22 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
         _p : PhantomData,
       }
     }
+  #[inline]
+  fn next_winsize<R : Read> (&mut self, r : &mut R ) -> Result<()>{
+    // winrem for next
+    self.winrem = if P::WRITE_SIZE {
+      try!(r.read_u64::<LittleEndian>()) as usize
+    } else {
+      match P::GROWTH_RATIO {
+         Some((n,d)) => self.init_size * n / d,
+         None => P::INIT_SIZE,
+      }
+    };
+    self.init_size = self.winrem;
+    Ok(())
+
+  }
+
   }
 
 impl<P : SizedWindowsParams> ExtWrite for SizedWindows<P> {
@@ -90,14 +111,8 @@ impl<P : SizedWindowsParams> ExtWrite for SizedWindows<P> {
   fn write_into<W : Write>(&mut self, w : &mut W, cont : &[u8]) -> Result<usize> {
     let mut tot = 0;
     while tot < cont.len() {
-      let ww = if self.winrem + tot < cont.len() {
-        try!(w.write(&cont[tot..tot + self.winrem]))
-      } else {
-        try!(w.write(&cont[tot..]))
-      };
-      tot += ww;
-      self.winrem -= ww;
       if self.winrem == 0 {
+
         // init next winrem
         self.winrem = match P::GROWTH_RATIO {
             Some((n,d)) => self.init_size * n / d,
@@ -111,15 +126,30 @@ impl<P : SizedWindowsParams> ExtWrite for SizedWindows<P> {
           try!(w.write_u64::<LittleEndian>(self.winrem as u64));
         };
       }
+
+
+
+      let ww = if self.winrem + tot < cont.len() {
+        try!(w.write(&cont[tot..tot + self.winrem]))
+      } else {
+        try!(w.write(&cont[tot..]))
+      };
+      tot += ww;
+      self.winrem -= ww;
     }
     Ok(tot)
   }
 
   #[inline]
   fn write_end<W : Write>(&mut self, r : &mut W) -> Result<()> {
-    // TODO buffer is not nice here
+    // TODO buffer is not nice here and more over we need random content (nice for debugging
+    // without but in tunnel it gives tunnel length) -> !!!
     let mut buffer = [0; 256];
 
+    if P::SECURE_PAD {
+      let mut rng = try!(OsRng::new()); // TODO test for perf (if cache)
+      rng.fill_bytes(&mut buffer);
+    };
     while self.winrem != 0 {
       let ww = if self.winrem > 256 {
         try!(r.write(&mut buffer))
@@ -174,15 +204,7 @@ impl<P : SizedWindowsParams> ExtRead for SizedWindows<P> {
         return Ok(rr)
       } else {
         // new window and drop this byte
-        self.winrem = if P::WRITE_SIZE {
-          try!(r.read_u64::<LittleEndian>()) as usize
-        } else {
-          match P::GROWTH_RATIO {
-            Some((n,d)) => self.init_size * n / d,
-            None => P::INIT_SIZE,
-          }
-        };
-        self.init_size = self.winrem;
+        try!(self.next_winsize(r));
       }
     }
     Ok(rr)
@@ -198,24 +220,32 @@ impl<P : SizedWindowsParams> ExtRead for SizedWindows<P> {
     // TODO buffer is needed here -> see if Read interface should not have a fn drop where we read
       // without buffer and drop content. For now hardcoded buffer length...
       let mut buffer = [0; 256];
-      while self.winrem != 0 {
-        let ww = if self.winrem > 256 {
-          try!(r.read(&mut buffer))
-        } else {
-          try!(r.read(&mut buffer[..self.winrem]))
-        };
-        self.winrem -= ww;
+      buffer[0] = 1;
+      while buffer[0] != 0 {
+
+        while self.winrem != 0 {
+          let ww = if self.winrem > 256 {
+            try!(r.read(&mut buffer))
+          } else {
+            try!(r.read(&mut buffer[..self.winrem]))
+          };
+          self.winrem -= ww;
+        }
+
+        let ww = try!(r.read(&mut buffer[..1]));
+        if ww != 1  {
+           error!("read end no terminal 0 : nbread {}\n{}\n",ww,buffer[0]);
+           return
+             Err(IoError::new(IoErrorKind::Other, "End read does not find expected terminal 0 of windows"));
+        }
+        if buffer[0] != 0 {
+          try!(self.next_winsize(r));
+        }
       }
-      let ww = try!(r.read(&mut buffer[..1]));
-      if ww != 1 || buffer[0] != 0 {
-         error!("\n{}\n",buffer[0]);
-         return
-           Err(IoError::new(IoErrorKind::Other, "End read does not find expected terminal 0 of widows"));
-      } else {
-        // init as new
-        self.init_size = P::INIT_SIZE;
-        self.winrem = P::INIT_SIZE;
-      }
+      // init as new
+      self.init_size = P::INIT_SIZE;
+      self.winrem = P::INIT_SIZE;
+
       Ok(())
     }
   }

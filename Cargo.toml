@@ -6,10 +6,8 @@ authors = ["Emeric Chevalier <emericchevalier.pro@gmail.com>"]
 
 
 [features]
-default = ["with-extra-test","rust-crypto"]
-openssl-impl = ["openssl"]
+default = ["with-extra-test"]
 mio-impl = ["mio","coroutine"]
-rust-crypto-impl = ["rust-crypto"]
 with-extra-test = []
 
 [dependencies]
@@ -43,14 +41,6 @@ optional = true
 path = "../../mydht-dep/coroutine-rs/"
 optional = true
 
-
-[dependencies.openssl] # currently only for hash_default...
-version = "0.6.7"
-optional = true
-
-[dependencies.rust-crypto]
-version = "0.2.33"
-optional = true
 
 #[dependencies.striple]
 #version = "0.0.1"

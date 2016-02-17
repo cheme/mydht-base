@@ -1,4 +1,3 @@
-
 extern crate time;
 use rustc_serialize::{Encoder,Encodable,Decoder,Decodable};
 use std::ops::Deref;
@@ -26,6 +25,21 @@ use keyval::FileKeyVal;
 use keyval::Attachment;
 use keyval::SettableAttachment;
 
+#[cfg(not(feature="openssl-impl"))]
+#[cfg(feature="rust-crypto-impl")]
+use std::io::{
+  Seek,
+  SeekFrom,
+  Read,
+};
+#[cfg(not(feature="openssl-impl"))]
+#[cfg(feature="rust-crypto-impl")]
+use self::crypto::sha2::Sha256;
+#[cfg(not(feature="openssl-impl"))]
+#[cfg(feature="rust-crypto-impl")]
+use self::crypto::digest::Digest;
+#[cfg(feature="openssl-impl")]
+use self::openssl::crypto::hash::{Hasher,Type};
 #[cfg(test)]
 use std::thread;
 
@@ -35,24 +49,6 @@ pub fn is_in_tmp_dir(f : &Path) -> bool {
 //  Path::new(os::tmpdir().to_string()).is_ancestor_of(f)
   // TODO usage of start_with instead of is_ancestor_of not tested
   f.starts_with(&env::temp_dir())
-}
-#[cfg(feature="openssl-impl")]
-#[inline]
-pub fn hash_default(f : &mut File) -> Vec<u8> {
-  hash_openssl(f)
-}
-#[cfg(not(feature="openssl-impl"))]
-#[cfg(feature="rust-crypto-impl")]
-#[inline]
-pub fn hash_default(f : &mut File) -> Vec<u8> {
-  let mut digest = Sha256::new();
-  hash_file_crypto(f,&mut digest)
-}
-#[cfg(not(feature="openssl-impl"))]
-#[cfg(not(feature="rust-crypto-impl"))]
-#[inline]
-pub fn hash_default(_ : &mut File) -> Vec<u8> {
-  panic!("No hash lib dependency to hash content");
 }
  
 // TODO rewrite with full new io and new path : this is so awfull + true uuid

@@ -50,8 +50,11 @@ pub trait Peer : KeyVal + 'static {
 /// refactor by using mode in get_shadow of peer directly and removing set_mode : allowing
 /// enum for shadow (see how to pack for not max size (noshadowmode). It also means that read
 /// header will no longer need to get the shadowmode from the header (less overhead).
-//Sync + Send + Clone + Debug + 'static {}
-pub trait Shadow : Send + 'static + ExtRead + ExtWrite {
+///
+/// Note that Shadow could be split in three : ReadShadow, WriteShadow and SymmetricShadow.
+/// Using a single trait is convenient for a simplier interface, but a Shadow could not be use 
+/// in two of the three previously describe context (except if implementation allows it).
+pub trait Shadow : Send + 'static + ExtRead + ExtWrite + Sized {
   /// type of shadow to apply (most of the time this will be () or bool but some use case may
   /// require 
   /// multiple shadowing scheme, and therefore probably an enum type).
@@ -62,18 +65,13 @@ pub trait Shadow : Send + 'static + ExtRead + ExtWrite {
   fn get_mode(&self) -> Self::ShadowMode;
 
 
-  /// base for shadow iter using a symetric key (first param), mainly use in reply for tunnel
-  /// message TODO just return ref to associated type being ExtRead and ExtWrite with ... or
-  /// specific mode?
-  fn shadow_iter_sim<W : Write> (&mut self, &[u8], &[u8], &mut W) -> IoResult<usize>;
-
-  fn read_shadow_iter_sim<R : Read> (&mut self, &[u8], &mut R, buf : &mut [u8]) -> IoResult<usize>;
-  fn shadow_sim_flush<W : Write> (&mut self, &mut W) -> IoResult<()>;
-  /// create a simkey for current mode TODO change to asref u8 in result, mainly use in reply for tunnel
-  /// message 
-  fn shadow_simkey(&mut self) -> Vec<u8>;
+  /// return simkey to be send or exchange. similar to write header but the key is not used,
+  /// it is only info to reply with.
+  fn send_shadow_simkey<W : Write>(_ : &mut W, _ : Self::ShadowMode ) -> IoResult<()>;
  
-// alias for previous naming
+  /// init from read key, similar to read header but to be use for writing.
+  fn init_from_shadow_simkey<R : Read>(_ : &mut R, _ : Self::ShadowMode, _ : bool ) -> IoResult<Self>;
+
   #[inline]
   fn read_shadow_header<R : Read> (&mut self, r : &mut R) -> IoResult<()> {
     self.read_header(r)
@@ -257,22 +255,13 @@ impl Shadow for NoShadow {
   fn set_mode (&mut self,_ : Self::ShadowMode)  {}
   #[inline]
   fn get_mode (&self) -> Self::ShadowMode {()}
- 
   #[inline]
-  fn shadow_iter_sim<W : Write> (&mut self, _ : &[u8], m : &[u8], w : &mut W) -> IoResult<usize> {
-    w.write(m)
-  }
-  #[inline]
-  fn read_shadow_iter_sim<R : Read> (&mut self, _ : &[u8], r : &mut R, buf : &mut [u8]) -> IoResult<usize> {
-    r.read(buf)
-  }
- 
-  #[inline]
-  fn shadow_sim_flush<W : Write> (&mut self, w : &mut W) -> IoResult<()> {
+  fn send_shadow_simkey<W : Write>(_ : &mut W, _ : Self::ShadowMode) -> IoResult<()> {
     Ok(())
   }
-  fn shadow_simkey(&mut self) -> Vec<u8> {
-    Vec::new()
+  #[inline]
+  fn init_from_shadow_simkey<R : Read>(_ : &mut R, _ : Self::ShadowMode, _ : bool) -> IoResult<Self> {
+    Ok(NoShadow)
   }
  
 }

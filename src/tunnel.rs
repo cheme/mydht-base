@@ -248,7 +248,6 @@ impl<E : ExtRead, P : Peer> ExtRead for TunnelReaderExt<E, P> {
   #[inline]
   fn read_header<R : Read>(&mut self, r : &mut R) -> Result<()> {
     let tun_mode = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
-    println!("tun mode : {:?}",tun_mode);
     match tun_mode {
        TunnelMode::NoTunnel => self.shadow.1 = Some(TunnelProxyInfo {
           next_proxy_peer : None,
@@ -257,18 +256,14 @@ impl<E : ExtRead, P : Peer> ExtRead for TunnelReaderExt<E, P> {
        }), // to be dest
 
        _ => {
-         println!("bef shad head");
         try!(self.shadow.read_header(r));
-         println!("aft shad head");
         if tun_mode.is_het() {
           if let Some(true) = self.is_dest() {
             // try to read shacont header
-          { let mut inw  = CompExtRInner(r, &mut self.shadow);
-            println!("shacont read x");
+          { 
+            let mut inw  = CompExtRInner(r, &mut self.shadow);
             try!(self.shacont.read_header(&mut inw)); }
-            println!("shacont read xx");
             try!(self.shadow.read_end(r));
-            println!("shacont read xx ennd ok");
             try!(self.shanocont.read_header(r)); // header of stop for last only
           }
         };
@@ -348,11 +343,8 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
       let mut geniter = thrng.gen_iter();
       let mut next_proxy_peer = None;
 
-println!("in {}", peers.len());
       for i in  (1 .. peers.len()).rev() { // do not add first (is origin)
-println!("in + {}", i);
         let p = peers.get(i).unwrap();
-println!("inbis");
         let tpi = TunnelProxyInfo {
           next_proxy_peer : next_proxy_peer,
           tunnel_id : geniter.next().unwrap(),
@@ -366,7 +358,6 @@ println!("inbis");
           s.set_mode(contmode.clone());
         }
         shad.push(TunnelShadowW(s, tpi));
-println!("push");
       }
     }
     let shacont = if mode.is_het() {
@@ -483,7 +474,6 @@ impl<E : ExtRead, P : Peer> ExtRead for TunnelShadowR<E,P> {
     inr.read(&mut buf[..]);
     println!("debug : buf {:?}", &buf[..]);*/
     let tpi : TunnelProxyInfo<P> = try!(bin_decode(&mut inr, SizeLimit::Infinite).map_err(|e|BindErr(e)));
-    println!("aft read tpi");
     self.1 = Some(tpi);
     Ok(())
   }

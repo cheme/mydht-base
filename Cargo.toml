@@ -11,6 +11,7 @@ openssl-impl = ["openssl"]
 mio-impl = ["mio","coroutine"]
 rust-crypto-impl = ["rust-crypto"]
 with-extra-test = []
+nightly = []
 
 [dependencies]
 log = "0.3.2"
@@ -30,7 +31,7 @@ git = "https://github.com/cheme/bit-vec.git"
 
 [dependencies.readwrite-comp]
 #path = "../readwrite-comp/"
-git = "https://github.com/cheme/readwrite.git"
+git = "https://github.com/cheme/readwrite-comp.git"
 
 [dependencies.mio]
 version = "0.4.1"

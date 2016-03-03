@@ -3,6 +3,332 @@
 //! TODO reader and writer with possible two different size limiter for het mode (head limiter
 //! should be small when content big or growable)
 //!
+//!
+//!
+//! # Frame schema :
+//!
+//! [] : content is limit by frame limiter, shadow plus end frame writer.
+//! [ is seen as the header and ] as the end content of rwext.
+//! [n ] : same with n as int note
+//! () : content size is know, only shadow
+//!
+//! all content is either shadowed or binary encoded
+//!
+//! Description for PublicTunnel are skipped : it is the same as BiTunnel without reply (a reply to
+//! a query is included in a PublicTunnel query) info
+//! (possibly a mode where error behaved like cache Tunnel).
+//!
+//!
+//! Error reply could be disable for each case, then the frame is the same without those infos.
+//!
+//! It is good to remember that no reply and no error reply ensure better security (less trace).
+//! Yet reply info (error token, error token xor, and rep key) are only all known by emitter and
+//! individually known by their designed peer.
+//!
+//! The route could be use one or more time, yet the mecanism for reused is not describe here (we
+//! consider unique use). Some notes are added about reuse strategy. Mostly reuse is running in
+//! reply like mode (sym shadow with known info, no need for headers). Reuse also involve specific
+//! TunnelState
+//!
+//! The description are written for three hop, 0 is emitter, 1 and 2 are proxy and 3 is dest,
+//! obviously more hop are easy to write (recursive). Error id of last is wrongly name as it is the
+//! message id to access emmitter info (in Tunnel not bitunnel).
+//!
+//! tunnel mode in frame is both TunnelMode info (static) and TunnelState (corresponding to Query
+//! or Reply obviously).
+//!  
+//!    tunnelmode := TunnelState TunnelMode
+//!
+//! Error code must be obviously secure random (with the exception that we may avoid route with xor
+//! collision of error code).
+//!
+//! ## Tunnel
+//!
+//! tunnel does not include reply route, because the same route is used for query and reply.
+//! It means that each peer need to maintain a cache (key val) of message to enable backward route.
+//! Therefore content is smaller, but proxying is more cumbersome (in case where tunnel stay in
+//! place for big content it could be better than BiTunnel (yet less secure)).
+//!
+//! Between each hop an unique tunnel msg cache id (*tci*) is use, it is the key to access info in cache,
+//! such key are therefore known only by peer communicating (when proxy this key is added at the
+//! end (previous value is not proxyied of course)).
+//! tci must be obviously secure random.
+//!
+//! TODO tcn (cache key of each peer) should be send by 0 in headers and only transmit in reply or
+//! optionaly in query if the key is already use in peer. -> do it latter as it 
+//! TODO similarily when reuse, those ids should change (use old tci on all head but store a new
+//! one for next usage (and reply)).
+//!
+//!
+//! ### Last
+//!
+//! Last mode (true for BiTunnel and PublicTunnel to), is a mode used to be lighter for big
+//! content, only the header is layered shadowed. Therefore this mode is way less secure than full
+//! : *some bytes (the payload) even if shadowed are the same between tunnel hops*.
+//!
+//! 0 cache : the message key keysim (included only in dest head), the ordered error ids (eid), and
+//!   the fact that we are destination for reply (no proxy)
+//! n cache : previous tunnel cache id, previous peer id, errorcodeid
+//! dest cache : nothing (except for reuse)
+//!
+//! #### query
+//!
+//!   TunnelMode is QueryOnce
+//!
+//!   tunnelmode tci0 [1 head1[1 head2[1 head3 [2 ]]][3 payload 2]3]
+//!
+//!   tunnelmode tci1 [1 head2[1 head3 [2 ]][3 payload 2]3]
+//!
+//!   tunnelmode tci2 [1 head3 [2 ][3 payload 2]3]
+//!
+//!    
+//!   1 : shadow asym, we could use asym only
+//!   2 : shadow asym, this implementation is for long content and should use sym shadow
+//!     internally. The header is only for the shadow part (not the frame limitter)
+//!   3 : frame limitter header, this one would be read and rewrite at each proxy hop
+//!
+//!   Notice that 2 and 3 compose to a standard shadow with frame limitter, except that header are
+//!   reversed in order (the header of shadow is still limitted by the dest3 head limiter. This
+//!   also implies that dest need to *read/write 3 header without applying 2* (after that juust read 3 over
+//!   2).
+//!
+//!   
+//!
+//! Total content size could be bigger than in full mode (depending on shadow used and rwext frame
+//! limiter), as there is more frame limitter and possible heteregenous shadow.
+//! 
+//! Proxy : tunnelmode is read, previouspeer ticket (tci) is read, Headn is read (we identify
+//! ourself as proxy). Tci and reply TunnelMode added to
+//! cache info for reply. Tunnelmode is written again as is, our cache key (tci) is written unshadowed.
+//! Remaining stack of head is read (with unshadow) and proxied as is,
+//! finally remaining payload is read/written as is.
+//!
+//! (content include next headers).
+//!
+//! Reuse : simple here as we already got cache, proxy cache will keep reply tci from and next query should
+//! only have payload and dest tci (plus special TunnelMode state (QueryCached))
+//!
+//! #### reply
+//!
+//!   Like for error TunnelState is ReplyCached.
+//!
+//!   TunnelState tci2 [1 payload]
+//!   TunnelState tci1 [1 payload]
+//!   TunnelState tci0 [1 payload]
+//!
+//!   1 : keysim shadowed content by dest (keysim is in TunnelProxyInfo 3 : aka head3 in previous
+//!     diagram)
+//!
+//!   Proxy : read TunnelState, read our cache tci, get TunnelMode from cache, get dest and dest tci from cache,
+//!   write TunnelState, write dest tci, read/write payload as is (using frame limiter r/w).
+//!
+//! #### error
+//!
+//!   if error in 3 (3 being a proxy in this case): 
+//!
+//!   TunnelState tci2 errorcode3
+//!   TunnelState tci1 (1 errorcode3)
+//!   TunnelState tci0 (1 (1 errorcode3))
+//!
+//!   1 : xor with errorcode except for error emitter (direct error code)
+//!
+//!   Proxy : read tunnelmode, our tci, get dest tci from cache (and peer id), read error code, write tunnelmode,
+//!   dest tci and xor with our error code.
+//!
+//!   Knowing it is error (and not reply) is from TunnelState (tunnelmode is both TunnelMode and
+//!   TunnelState).
+//!
+//!   Origin (ourself or 0) will simply xor errorcode (n-1 xored), by its cached ordered error code value until it
+//!   got a known value (he got all error code in cache), indicating the peer who could not contact
+//!   its next peer. On such error the dht should try to check connection (or not to avoid leaking
+//!   info) and update its peer table accordingly then send in a new route (start of route could be
+//!   kept (or not to avoid leaking info (if reuse we can consider it is fine))).
+//!   Notice that this is subject to rare collision (this could be avoid by checking it at route
+//!   construct but it is seems like useless cost (xor construction is in reverse order and xor
+//!   read is in order : so it is not linear)).
+//!
+//! ### Full
+//!
+//! Full mode is standard layered proxy where every hop got to shadow/unshadow the full content.
+//! The emiter multishadow n time for n hop on query and unmultishadow n time on reception.
+//!
+//! Full is more costly to forward as all message must be unshadow, therefore shadow mode should
+//! combine asym and sym scheme.
+//!
+//!
+//! Cache are the same as for Last except that 
+//! 0 cache : message key keysim are multiple and ordered (n),
+//! n cache : a message key keysim is added (read from its header)
+//! dest cache : nothing (except for reuse)
+//!
+//! #### query
+//!
+//!   TunnelMode is QueryOnce
+//!
+//!   tunnelmode tci0 [1 head1[1 head2[1 head3 payload ]]]
+//!   tunnelmode tci1 [1 head2[1 head3 payload ]]
+//!   tunnelmode tci2 [1 head3 payload ]
+//!    
+//!   1 : shadow asym, this implementation is for long content and should use sym shadow
+//!     internally. Done with peer shadow public knowledge.
+//!
+//!   head contain n cache info (in TunnelProxyInfo) with the error id, and the keysim for reply.
+//!   
+//! Proxy : tunnelmode is read, previouspeer ticket (tci) is read, Headn is read (we identify that
+//! we are not dest). tci is added to cache info for reply. tunnelmode for reply is also added to
+//! cache.
+//!
+//! Tunnelmode and our cache key (tci) are written as is unshadowed.
+//! , all remaining content is read with unshadow and write unshadow 
+//! (remaining content does include next headers).
+//!
+//! Reuse : similar to last.
+//! 
+//! #### reply
+//!
+//!   TunnelState tci2 [2 (1 payload)]
+//!   TunnelState tci1 [2 (1 (1 payload))]
+//!   TunnelState tci1 [2 (1 (1 (1 payload)))]
+//!
+//!   1 : keysim shadowed (by dest  or shadowed content by dest without frame limitter
+//!   2 : frame limitter only (no shadow)
+//!
+//!   Proxy : same as for Last, except that we shadow content with our shadower.
+//!
+//! #### error
+//!
+//!   Same as Last
+//!
+//!
+//! ## BiTunnel
+//!
+//!
+//! Reply route could differ from query route.
+//!
+//! No tci is seen, only unshadow content is tunnelmode.
+//!
+//! Note that BiTunnel could be used with reply route being same as query route, just to avoid
+//! local cache. 
+//! It still is better than Tunnel because tci could not be analysed (or tci
+//! conflict). 
+//! Yet for reuse a Tunnel cache need to be use with tci mecanism (same as Tunnel but
+//! with more tci), and in this case BiTunnel with two identical route is useless.
+//!
+//!
+//! ### Last
+//!
+//! Similar to Tunnel, but reply headers are added after content.
+//!
+//! No cache (except in case of reuse where we switch to Tunnel like (the tci will have to be
+//! inserted similarily) (with additional cache in
+//! reply route)).
+//!
+//! #### query
+//!
+//!   TunnelMode is QueryOnce
+//!
+//!   Same frame as for Tunnel with reply route *rr* added and no tci (when not reusable). For instance :
+//!
+//!   tunnelmode [1 head1[1 head2[1 head3 [2 ]]][3 payload 2] rr 3]
+//!
+//!   In this case :
+//!   2 : contains a frame limitter header this time (to know where shadowroute start).
+//!   3 : still a frame limitter only.
+//!
+//!   head 3 contain the mkey for reply 
+//!
+//!   Detail of rr is :
+//!
+//!   [1 rhead2[1 rhead1[1 rhead0]]]
+//!
+//!   Note that rhead0 also contains the mkey (no cache for 0)
+//!
+//! Proxy : Same as Tunnel Last but no cache of info or tci read.
+//!
+//! #### reply
+//!
+//!   Dest will read write remaining rr as is (its header contains first peer to reply to), it
+//!   explain why rr is not before payload : we need to read payload to know if we reply and there
+//!   fore rr does not need to be read (no memory use but stuck transport : as doing a reply could
+//!   be long we may want still want to cache the rr).
+//!
+//!   tunnelmode rr [3 (4replypayload)]
+//!   tunnelmode [1 rhead1[1 rhead0]][3 (4replypayload)]
+//!   tunnelmode [1 rhead0][3 (4replypayload)]
+//!
+//!   3 : frame limitter only (used by each proxy)
+//!   4 : keysim (mkey) encoded content (used only by dest)
+//!
+//!
+//!   Proxy : read TunnelState, read our cache tci, get TunnelMode from cache, get dest and dest tci from cache,
+//!   write TunnelState, write dest tci, read/write payload as is (using frame limiter r/w).
+//!
+//! #### error
+//!    
+//!    No error or insert of rr for every rhead like this (big cost on frame size) :
+//!
+//!    Query frame became :
+//!
+//!    tunnelmode [1 head1 rr1[1 head2 rr2[1 head3 [2 ]]][3 payload 2] rr 3]
+//!
+//!    rrn are defined like rr.
+//!
+//!    Note that reply route should be all of similar length with different peers in each route (n distinct route).
+//!
+//!    Error is close to Tunnel (multiple xor and replace payload) : see Tunnel for detail. At peer
+//!    n: 
+//!
+//!    tunnelmode rrn (errorcode)
+//!
+//!    TODO a mode could run error with same route by using tci (needed for reuse)
+//!
+//!
+//! ### Full
+//!
+//! Payload is included in layer shadow.
+//!
+//!
+//! #### query
+//!
+//!
+//!   tunnelmode [1 head1[1 head2[1 head3 [2 payload ] rr ]]]
+//!
+//!   In this case :
+//!   1 : see Full Tunnel
+//!   2 : is frame limitter only to get.
+//!
+//!   rr is same as for Last.
+//!
+//!   But all rhead contains a unique mkey. (for reuse head contain one to but and head3 (dest) contain
+//!   all head mkey)
+//!   rhead0 contains all those ordered mkey (no cache)
+//!
+//! Proxy : Same as Full Tunnel but without caching anything or tci reading.
+//!
+//! #### reply
+//!
+//!   Similar to Last
+//!
+//!   tunnelmode rr [3 (4replypayload)]
+//!   tunnelmode [1 rhead1[1 rhead0]][3 (4 (4replypayload))]
+//!   tunnelmode [1 rhead0][3 (4(4(4replypayload)))]
+//!
+//!   3 : frame limitter only (used by each proxy)
+//!   4 : keysim (mkey) encoded content (used only by dest)
+//!
+//!   Proxy : same as for Last, except that we shadow content with each proxy mkey (rhead0
+//!   containing all rhead key).
+//!
+//! #### error
+//!
+//! Same as Last (error multiple xor is already Full).
+//!    
+//!
+//!
+//!
+//!  *Implementation Status* : PublicTunnel but
+//!    TODO add state for PublicTunnel in code (currently immediatly TunnelMode).
+//!
 
 use rand::thread_rng;
 use rand::Rng;
@@ -104,6 +430,22 @@ pub enum TunnelMode {
   PublicTunnel(u8,TunnelShadowMode,ErrorHandlingMode),
 }
 
+#[derive(RustcDecodable,RustcEncodable,Debug,Clone,PartialEq,Eq)]
+pub enum TunnelState {
+  /// query with all info to establish route (and reply)
+  QueryOnce,
+  /// info are cached
+  QueryCached,
+  /// Reply with no additional info for reuse
+  ReplyOnce,
+  /// info are cached
+  ReplyCached,
+  /// Error are only for query, as error for reply could not be emit again (dest do not know origin
+  /// of query (otherwhise use PublicTunnel and only send Query).
+  QError,
+//  Query(usize), // nb of query possible TODO for reuse 
+//  Reply(usize), // nb of reply possible TODO for reuse
+}
 #[derive(RustcDecodable,RustcEncodable,Debug,Clone,PartialEq,Eq)]
 pub enum TunnelShadowMode {
   /// NoShadow for testing shadow is not applied

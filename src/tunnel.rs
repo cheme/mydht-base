@@ -326,8 +326,7 @@
 //!
 //!
 //!
-//!  *Implementation Status* : PublicTunnel but
-//!    TODO add state for PublicTunnel in code (currently immediatly TunnelMode).
+//!  *Implementation Status* : PublicTunnel
 //!
 
 use rand::thread_rng;
@@ -628,6 +627,7 @@ pub struct TunnelReaderExt<E : ExtRead, P : Peer> {
   shacont: <P as Peer>::Shadow, // our decoding
   shanocont: E, // for proxying
   mode: TunnelMode,
+  state: TunnelState,
 }
 impl<E : ExtRead, P : Peer> TunnelReaderExt<E, P> {
   #[inline]
@@ -642,16 +642,18 @@ impl<E : ExtRead, P : Peer> TunnelReaderExt<E, P> {
 impl<E : ExtRead + Clone, P : Peer> TunnelReaderExt<E, P> {
   // new, if tunnel mode is already read or static it could be set but reader (from as_reader) could not be used
   // afterward (it would read header again)).
-  pub fn new(p : &P, e : E, mode : Option<TunnelMode>) -> TunnelReaderExt<E, P> {
+  pub fn new(p : &P, e : E, mode : Option<TunnelMode>, state : Option<TunnelState>) -> TunnelReaderExt<E, P> {
     let mut s1 = p.get_shadower(false);
     let mut s2 = p.get_shadower(false);
     let m = mode.unwrap_or(TunnelMode::NoTunnel); // default to no tunnel
+    let s = state.unwrap_or(TunnelState::QueryOnce); // default to query no cache
 
     TunnelReaderExt {
       shadow : TunnelShadowR(CompExtR(s1,e.clone()),None),
       shacont : s2,
       shanocont : e,
       mode : m,
+      state : s,
     }
   }
 }
@@ -659,6 +661,7 @@ impl<E : ExtRead + Clone, P : Peer> TunnelReaderExt<E, P> {
 impl<E : ExtRead, P : Peer> ExtRead for TunnelReaderExt<E, P> {
   #[inline]
   fn read_header<R : Read>(&mut self, r : &mut R) -> Result<()> {
+    let tun_state = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
     let tun_mode = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
     match tun_mode {
        TunnelMode::NoTunnel => self.shadow.1 = Some(TunnelProxyInfo {
@@ -683,6 +686,7 @@ impl<E : ExtRead, P : Peer> ExtRead for TunnelReaderExt<E, P> {
       }
     };
     self.mode = tun_mode;
+    self.state = tun_state;
     Ok(())
   }
  
@@ -734,6 +738,7 @@ pub struct TunnelWriterExt<E : ExtWrite, P : Peer> {
   shacont: Option<CompExtW<<P as Peer>::Shadow,E>>, // shadow for content when heterogenous enc and last : the reader need to know the size of its content but E is external
   error: Option<usize>, // possible error hop to report
   mode: TunnelMode,
+  state: TunnelState,
 }
 impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
   #[inline]
@@ -741,7 +746,7 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
     CompW::new(w,self)
   }
   // new
-  pub fn new(peers : &[&P], e : E, mode : TunnelMode, error : Option<usize>, 
+  pub fn new(peers : &[&P], e : E, mode : TunnelMode, state : TunnelState, error : Option<usize>, 
     headmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
     contmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
     error_route : Option<&[&P]>,
@@ -792,6 +797,7 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
       shacont : shacont,
       error: error,
       mode: mode,
+      state: state,
     }
   }
 }
@@ -799,6 +805,7 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
 impl<E : ExtWrite, P : Peer> ExtWrite for TunnelWriterExt<E, P> {
   #[inline]
   fn write_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    try!(bin_encode(&self.state, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
     try!(bin_encode(&self.mode, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
     if let TunnelMode::NoTunnel = self.mode {
       Ok(())
@@ -927,6 +934,7 @@ pub fn proxy_content<
   r : &mut R,
   w : &mut W) -> Result<()> {
     {
+    try!(bin_encode(&tre.state, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
     try!(bin_encode(&tre.mode, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
     try!(eproxy.write_header(w));
     let mut sr = 1;

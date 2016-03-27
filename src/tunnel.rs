@@ -14,9 +14,7 @@
 //!
 //! all content is either shadowed or binary encoded
 //!
-//! Description for PublicTunnel are skipped : it is the same as BiTunnel without reply (a reply to
-//! a query is included in a PublicTunnel query) info
-//! (possibly a mode where error behaved like cache Tunnel).
+//! Description for NoRepTunnel are skipped : it is the same as BiTunnel without reply info.
 //!
 //!
 //! Error reply could be disable for each case, then the frame is the same without those infos.
@@ -62,7 +60,7 @@
 //!
 //! ### Last
 //!
-//! Last mode (true for BiTunnel and PublicTunnel to), is a mode used to be lighter for big
+//! Last mode (true for BiTunnel and NoRepTunnel to), is a mode used to be lighter for big
 //! content, only the header is layered shadowed. Therefore this mode is way less secure than full
 //! : *some bytes (the payload) even if shadowed are the same between tunnel hops*.
 //!
@@ -124,7 +122,7 @@
 //!
 //! #### error
 //!
-//!   if error in 3 (3 being a proxy in this case): 
+//!   if error in third hop (being a proxy in this case): 
 //!
 //!   TunnelState tci2 errorcode3
 //!   TunnelState tci1 (1 errorcode3)
@@ -233,13 +231,13 @@
 //!
 //!   In this case :
 //!   2 : contains a frame limitter header this time (to know where shadowroute start).
-//!   3 : still a frame limitter only.
+//!   3 : still a frame limitter only (and non shadowed by any 1).
 //!
 //!   head 3 contain the mkey for reply 
 //!
 //!   Detail of rr is :
 //!
-//!   [1 rhead2[1 rhead1[1 rhead0]]]
+//!   replypeerid [1 rhead2[1 rhead1[1 rhead0]]]
 //!
 //!   Note that rhead0 also contains the mkey (no cache for 0)
 //!
@@ -269,16 +267,23 @@
 //!
 //!    Query frame became :
 //!
-//!    tunnelmode [1 head1 rr1[1 head2 rr2[1 head3 [2 ]]][3 payload 2] rr 3]
+//!    tunnelmode [1 head1 [1 head2 [1 head3 [2 ]]][3 [3 [3 payload 2] rr 3] [rr2] 3] [rr1]
 //!
 //!    rrn are defined like rr.
+//!
 //!
 //!    Note that reply route should be all of similar length with different peers in each route (n distinct route).
 //!
 //!    Error is close to Tunnel (multiple xor and replace payload) : see Tunnel for detail. At peer
 //!    n: 
 //!
-//!    tunnelmode rrn (errorcode)
+//!    TunnelState rrn
+//!
+//!    Here no need to xor errorcode, just ensure when building rr that error code for dest is
+//!    the error code of the peer (as error reply are layered).
+//!
+//!    TunnelMode is not written as their is currently only two error mechanism using different
+//!    states.
 //!
 //!    TODO a mode could run error with same route by using tci (needed for reuse)
 //!
@@ -321,12 +326,19 @@
 //!
 //! #### error
 //!
+//!    Query frame became :
+//!
+//!   tunnelmode [1 head1[1 head2[1 head3 [2 payload ] rr ] ][rr2] ][rr1]
+//!
+//!   [ for rr1 and rr2 is only frame delimiter
+//!
 //! Same as Last (error multiple xor is already Full).
 //!    
 //!
 //!
 //!
-//!  *Implementation Status* : PublicTunnel
+//!  *Implementation Status* : NoRepTunnel
+//!  TODO test tcid transmit
 //!
 
 use rand::thread_rng;
@@ -408,29 +420,33 @@ pub type TunnelID = usize;
 /// For some application it could be relevant to forbid the reply to some query mode : 
 /// TODO implement a filter in server process (and client proxy).
 /// When a nb hop is in tunnel mode it could be changed or not be the same as the actual size : it
-/// is only an indication of the size to use to proxy query (or to reply for publicTunnel).
+/// is only an indication of the size to use to proxy query (or to reply for norepTunnel).
 pub enum TunnelMode {
   NoTunnel, // TODO remove as in this case we use directly writer
   /// Tunnel using a single path (forward path = backward path). Parameter is number of hop in the
-  /// tunnel (1 is direct).
+  /// tunnel (1 is direct). TODO remove
   /// Error take tunnel backward (error is unencrypted (we do not know originator) and therefore
   /// not explicit : id node could not proxied.
   /// For full tunnel shadow mode it is encrypted with every keys (and temp key for every hop are
   /// transmitted to dest for reply (every hop got it packed to)).
   Tunnel(u8,TunnelShadowMode,ErrorHandlingMode),
   /// Tunnel with different path forward and backward.
-  /// param is nb of hop.
+  /// param is nb of hop. TODO remove
   /// Error will use forward route like normal tunnel if boolean is true, or backward route (very
   /// likely to fail and result in query timeout) if boolean is false
   BiTunnel(u8,TunnelShadowMode,bool,ErrorHandlingMode),
  
-  /// in this mode origin and destination know themselve (cf message mode), we simply reply with same nb hop. Back
-  /// route is therefore from dest (no need to include back route info). 
-  PublicTunnel(u8,TunnelShadowMode,ErrorHandlingMode),
+  /// In this mode we do not expect a reply (Error), or case when we know dest/emitter(ErrorHandling or in
+  /// message) and the reply would be another tunnel query.
+  /// Back route info may be include for error only (not when sending error of course).
+  /// TODO rename to NoRepTunnel!!!
+  NoRepTunnel(u8,TunnelShadowMode,ErrorHandlingMode),
 }
 
 #[derive(RustcDecodable,RustcEncodable,Debug,Clone,PartialEq,Eq)]
 pub enum TunnelState {
+  /// NoTunnel, same as TunnelMode::NoTunnel (TODO remove TunnelMode::NoTunnel when stable)
+  TunnelState,
   /// query with all info to establish route (and reply)
   QueryOnce,
   /// info are cached
@@ -440,8 +456,10 @@ pub enum TunnelState {
   /// info are cached
   ReplyCached,
   /// Error are only for query, as error for reply could not be emit again (dest do not know origin
-  /// of query (otherwhise use PublicTunnel and only send Query).
+  /// of query (otherwhise use NoRepTunnel and only send Query).
   QError,
+  /// same as QError but no route just tcid, and error is send as xor of previous with ours.
+  QErrorCached,
 //  Query(usize), // nb of query possible TODO for reuse 
 //  Reply(usize), // nb of reply possible TODO for reuse
 }
@@ -457,6 +475,9 @@ pub enum TunnelShadowMode {
   /// Same as last but header is using same shadower (default as content) TODO for now not
   /// implemented
   LastDefault,
+ 
+  // TODO technical mode for header writing only (error reply case : currently full is used with no
+  // content : inefficient) aka Last without content key and delimiters
 }
 
 /// Mode to use for error handle
@@ -464,12 +485,15 @@ pub enum TunnelShadowMode {
 pub enum ErrorHandlingMode {
   /// do not propagate errors
   NoHandling,
-  /// send error to peer with desingned mode (case where we can know emitter for dest or other error
+  /// send error to peer with designed mode (case where we can know emitter for dest or other error
   /// handling scheme with possible rendezvous point), TunnelMode is optional and used only for
-  /// case where the reply mode differs from the original tunnelmode
+  /// case where the reply mode differs from the original tunnelmode TODO remove?? (actually use
+  /// for norep (public) to set origin for dest)
   KnownDest(Option<Box<TunnelMode>>),
   /// route for error is included, end of payload should be proxyied.
   ErrorRoute,
+  /// if route is cached (info in local cache), report error with same route
+  ErrorCachedRoute,
 }
 
 
@@ -478,36 +502,132 @@ pub enum ErrorHandlingMode {
 pub enum ErrorHandlingInfo<P : Peer> {
   NoHandling,
   KnownDest(<P as KeyVal>::Key, Option<TunnelMode>),
-  ErrorRoute(<P as Peer>::Address),
+  ErrorRoute(usize), // route headers are to be read afterward, usize is errorcode, address is in cache (tci is included in frame)
+  ErrorCachedRoute(usize), // usize is error code
 }
+impl<P : Peer> ErrorHandlingInfo<P> {
+  #[inline]
+  /// get error code return 0 if undefined
+  pub fn get_error_code(&self) -> usize {
+    match self {
+      &ErrorHandlingInfo::ErrorRoute(ec) | &ErrorHandlingInfo::ErrorCachedRoute(ec) => ec,
+      _ => 0,
+    }
+  }
 
+}
 impl TunnelMode {
+  /// do we send cache id to next peer TODO include tunnelstate consideration (QueryCached and
+  /// ReplyCached). -> may simply be the same (just control if route is dropped and change mode
+  /// (set to error cachedroute automatically)
+  /// Note that this involve additional frame so the value must be the same for all hop including
+  /// dest (otherwhise dest may not read an included tcid).
+  pub fn do_cache(&self) -> bool {
+     match self {
+      &TunnelMode::NoTunnel => false,
+      // always cache (reply) if no reply needed : use NoRepTunnel
+      &TunnelMode::Tunnel(_,_, ref b) => {
+        match b {
+          &ErrorHandlingMode::ErrorCachedRoute => true,
+          &ErrorHandlingMode::ErrorRoute => true,
+          _ => false,
+        }
+      },
+      // cache only for cached route
+      &TunnelMode::BiTunnel(_,_,_, ref b) => {
+        match b {
+          &ErrorHandlingMode::ErrorCachedRoute => true,
+          _ => false,
+        }
+      },
+      &TunnelMode::NoRepTunnel(_,_, ref b) => {
+        match b {
+          &ErrorHandlingMode::ErrorCachedRoute => true,
+          _ => false,
+        }
+      },
+     }
+
+  }
+  /// do we need to insert error route for hop peer
+  pub fn insert_error_route(&self) -> bool {
+     match self {
+      &TunnelMode::NoTunnel => false,
+      &TunnelMode::Tunnel(_,_, ref b) => {
+        match b {
+          &ErrorHandlingMode::ErrorRoute => true,
+          _ => false,
+        }
+      },
+      &TunnelMode::BiTunnel(_,_,_, ref b) => {
+        match b {
+          //&ErrorHandlingMode::ErrorCachedRoute | &ErrorHandlingMode::ErrorRoute => true,
+          &ErrorHandlingMode::ErrorRoute => true,
+          _ => false,
+        }
+      },
+      &TunnelMode::NoRepTunnel(_,_, ref b) => {
+        match b {
+          //&ErrorHandlingMode::ErrorCachedRoute | &ErrorHandlingMode::ErrorRoute => true,
+          &ErrorHandlingMode::ErrorRoute => true,
+          _ => false,
+        }
+      },
+     }
+  }
+  /// get a copy of errorhandling mode
+  pub fn errhandling_mode(&self) -> ErrorHandlingMode {
+     match self {
+      &TunnelMode::NoTunnel => ErrorHandlingMode::NoHandling,
+      &TunnelMode::Tunnel(_,_,ref b) | &TunnelMode::BiTunnel(_,_,_,ref b) | &TunnelMode::NoRepTunnel(_,_,ref b) => b.clone(), 
+      }
+  }
+ 
   /// return a vec of error handling info starting at first peer (route start at ourself) and
   /// ending at dest (dest is reply info)
-  /// error_route if it differs from route, note that error route could be sized one only or more
-  /// if variable length or variable route)
-  pub fn errorhandling_mode<P : Peer>(&self, route : &[&P], error_route : Option<&[&P]>) -> Vec<ErrorHandlingInfo<P>> {
+  /// error_route if it differs from route, note that we use a single error route for all hop,
+  /// using multiple error route could be better. Similarily the route length decrease depending on
+  /// error location (max length is position of hop : this could also change).
+  pub fn errhandling_infos<P : Peer>(&self, route : &[(usize,&P)], error_route : Option<&[(usize,&P)]>) -> Vec<ErrorHandlingInfo<P>> {
      let mut res = vec![ErrorHandlingInfo::NoHandling; route.len() - 1];
-     let error_route_len = error_route.map(|er|er.len()).unwrap_or(0);
+//     let error_route_len = error_route.map(|er|er.len()).unwrap_or(0);
      match self {
       &TunnelMode::NoTunnel => (),
       &TunnelMode::Tunnel(_,_, ref b) => {
-        panic!("TODO implement");
+        match b {
+          &ErrorHandlingMode::NoHandling => (),
+          _ => panic!("TODO implement"),
+        }
       },
       &TunnelMode::BiTunnel(_,_,_, ref b) => {
         panic!("TODO implement");
       },
-      &TunnelMode::PublicTunnel(_,_, ref b) => {
+      &TunnelMode::NoRepTunnel(_,_, ref b) => {
         match b {
           &ErrorHandlingMode::NoHandling => (),
           &ErrorHandlingMode::KnownDest(ref ob) => {
-            res[route.len() - 2] = ErrorHandlingInfo::KnownDest(route[0].get_key(), ob.as_ref().map(|b|(**b).clone()));
+            res[route.len() - 2] = ErrorHandlingInfo::KnownDest(route[0].1.get_key(), ob.as_ref().map(|b|(**b).clone()));
           },
+          &ErrorHandlingMode::ErrorCachedRoute => {
+            for i in 0..route.len() - 1 {
+              // write error code
+              res[i] = ErrorHandlingInfo::ErrorCachedRoute(route.get(i).unwrap().0);
+            }
+            // No known dest (norep could be use as anonym without reply
+//            res[route.len() - 2] = ErrorHandlingInfo::KnownDest(route[0].1.get_key(), None)
+          },
+
           &ErrorHandlingMode::ErrorRoute => {
+            for i in 0..route.len() - 1 {
+           // if error_route_len == 0 {
+              // write error code
+              res[i] = ErrorHandlingInfo::ErrorRoute(route.get(i).unwrap().0);
+            //}
+/*
             for i in 0..res.len() {
             if error_route_len == 0 {
               // same route use for reply
-              res[i] = ErrorHandlingInfo::ErrorRoute(route.get(i).unwrap().to_address());
+              res[i] = ErrorHandlingInfo::ErrorRoute(route.get(i).unwrap().0);
             } else {
               let ix = if error_route_len > i {
                 error_route_len - i
@@ -515,11 +635,9 @@ impl TunnelMode {
                 0
               };
               // use other route
-              res[i] = ErrorHandlingInfo::ErrorRoute(error_route.as_ref().unwrap().get(ix).unwrap().to_address());
-            };
+              res[i] = ErrorHandlingInfo::ErrorRoute(error_route.as_ref().unwrap().get(ix).unwrap().0);
+            };*/
             }
-            // dest is known dest (public mode)
-            res[route.len() - 1] = ErrorHandlingInfo::KnownDest(route[0].get_key(), None)
           },
         }
       },
@@ -533,7 +651,7 @@ impl TunnelMode {
       &TunnelMode::NoTunnel => TunnelShadowMode::NoShadow,
       &TunnelMode::Tunnel(_,ref b,_) 
       | &TunnelMode::BiTunnel(_,ref b,_,_) 
-      | &TunnelMode::PublicTunnel(_,ref b,_) => b.clone(),
+      | &TunnelMode::NoRepTunnel(_,ref b,_) => b.clone(),
     }
   }
   pub fn is_full_enc(&self) -> bool {
@@ -563,13 +681,13 @@ impl TunnelShadowMode {
 pub enum TunnelModeMsg {
   Tunnel(u8,Option<usize>, TunnelID, TunnelShadowMode, ), //first u8 is size of tunnel for next hop of query, usize is size of descriptor for proxying info, if no usize it means it is fully shadowed and a pair is under it
   BiTunnel(u8,bool,Option<usize>,TunnelID,TunnelShadowMode), // see tunnel, plus if bool is true we error reply with forward route stored as laste param TODO replace Vec<u8> by Reader (need encodable of this reader as writalll
-  PublicTunnel(u8,usize,TunnelID,TunnelShadowMode),
+  NoRepTunnel(u8,usize,TunnelID,TunnelShadowMode),
 }
 */
 #[derive(RustcDecodable,RustcEncodable,Debug,Clone)]
 pub struct TunnelProxyInfo<P : Peer> {
   pub next_proxy_peer : Option<<P as Peer>::Address>,
-  pub tunnel_id : usize, // tunnelId change for every hop
+  pub tunnel_id : usize, // tunnelId change for every hop that is description tci
   pub tunnel_id_failure : Option<usize>, // if set that is a failure
   pub error_handle : ErrorHandlingInfo<P>, // error handle
 }
@@ -589,7 +707,7 @@ impl TunnelModeMsg {
 
       &TunnelModeMsg::Tunnel (l,_,_,ref s1) => TunnelMode::Tunnel(l,s1.clone()),
       &TunnelModeMsg::BiTunnel (l,f,_,_,ref s1) => TunnelMode::BiTunnel(l,s1.clone(),f),
-      &TunnelModeMsg::PublicTunnel(l,_,_,ref s1) => TunnelMode::PublicTunnel(l,s1.clone()),
+      &TunnelModeMsg::NoRepTunnel(l,_,_,ref s1) => TunnelMode::NoRepTunnel(l,s1.clone()),
     }
    
   }
@@ -597,21 +715,21 @@ impl TunnelModeMsg {
     match self {
       &TunnelModeMsg::Tunnel (_,_,ref tid,_) => tid,
       &TunnelModeMsg::BiTunnel (_,_,_,ref tid,_) => tid,
-      &TunnelModeMsg::PublicTunnel(_,_,ref tid, _) => tid,
+      &TunnelModeMsg::NoRepTunnel(_,_,ref tid, _) => tid,
     }
   }
   pub fn get_tunnel_length (&self) -> u8 {
     match self {
       &TunnelModeMsg::Tunnel (l,_,_,_) => l,
       &TunnelModeMsg::BiTunnel (l,_,_,_,_) => l,
-      &TunnelModeMsg::PublicTunnel(l,_,_, _) => l,
+      &TunnelModeMsg::NoRepTunnel(l,_,_, _) => l,
     }
   }
   pub fn get_shadow_mode (&self) -> TunnelShadowMode {
     match self {
       &TunnelModeMsg::Tunnel (_,_,_,ref s) => s.clone(),
       &TunnelModeMsg::BiTunnel (_,_,_,_,ref s) => s.clone(),
-      &TunnelModeMsg::PublicTunnel(_,_,_,ref s) => s.clone(),
+      &TunnelModeMsg::NoRepTunnel(_,_,_,ref s) => s.clone(),
     }
   }
 }*/
@@ -623,17 +741,30 @@ pub type TunnelReader<'a, 'b, E : ExtRead + 'b, P : Peer + 'b, R : 'a + Read> = 
 /// could only use one in most case but we do not know it beforer reading frame header).
 /// E is the frame limiter used (see bytes_wr).
 pub struct TunnelReaderExt<E : ExtRead, P : Peer> {
-  shadow: TunnelShadowR<E,P>, // our decoding
+  pub shadow: TunnelShadowR<E,P>, // our decoding
   shacont: <P as Peer>::Shadow, // our decoding
   shanocont: E, // for proxying
-  mode: TunnelMode,
+  pub mode: TunnelMode,
   state: TunnelState,
+  pub previous_cacheid : Vec<u8>,
 }
+
 impl<E : ExtRead, P : Peer> TunnelReaderExt<E, P> {
   #[inline]
   pub fn is_dest(&self) -> Option<bool> {
     self.shadow.1.as_ref().map(|tpi|tpi.next_proxy_peer.is_none())
   }
+  #[inline]
+  pub fn previous_tunnelid(&self) -> &[u8] {
+    &self.previous_cacheid[..]
+  }
+
+
+  #[inline]
+  pub fn error_code(&self) -> usize {
+    self.shadow.1.as_ref().map_or(0,|tpi|tpi.error_handle.get_error_code())
+  }
+
   #[inline]
   pub fn as_reader<'a,'b,R : Read>(&'b mut self, r : &'a mut R) -> TunnelReader<'a, 'b, E, P, R> {
     CompR::new(r,self)
@@ -654,15 +785,59 @@ impl<E : ExtRead + Clone, P : Peer> TunnelReaderExt<E, P> {
       shanocont : e,
       mode : m,
       state : s,
+      previous_cacheid : Vec::new(), // TODO switch to option??
     }
   }
 }
 
+#[inline]
+pub fn read_state<R : Read> (r : &mut R) -> Result<TunnelState> {
+  Ok(try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e))))
+}
+
+#[inline]
+pub fn read_cacheid<R : Read> (r : &mut R) -> Result<Vec<u8>> {
+  Ok(try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e))))
+}
+
+
+/// read error code then proxy it (xor with cachecode   TunnelState tci2 errorcode3
+#[inline]
+pub fn proxy_cached_err<R : Read, W : Write> (r : &mut R, w : &mut W, from_cached_id : &[u8], cached_errcode : usize) -> Result<()> {
+  let err_code : usize = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
+  try!(bin_encode(&TunnelState::QErrorCached, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+  try!(bin_encode(&from_cached_id, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+  try!(bin_encode(&err_code, w, SizeLimit::Infinite).map_err(|e|BincErr(e))); // TODO xor cached_errcode
+  Ok(())
+}
+/// get peer index for error
+#[inline]
+pub fn identify_cached_errcode<R : Read,P> (r : &mut R, route : Vec<(usize,&P)>) -> Result<usize> {
+  let mut err_code : usize = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
+  let mut i = 1;
+  for c in route {
+    if err_code == c.0 {
+      return Ok(i);
+    }
+
+    err_code = err_code; // TODO xor cached_error
+    i += 1;
+  }
+  Err(IoError::new (
+    IoErrorKind::Other,
+    "Wrong xor error code identifier",
+  ))
+}
+ 
 impl<E : ExtRead, P : Peer> ExtRead for TunnelReaderExt<E, P> {
   #[inline]
   fn read_header<R : Read>(&mut self, r : &mut R) -> Result<()> {
     let tun_state = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
-    let tun_mode = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
+    let tun_mode : TunnelMode = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
+    // write previous_id (current id)
+    if tun_mode.do_cache() {
+      self.previous_cacheid = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
+    }
     match tun_mode {
        TunnelMode::NoTunnel => self.shadow.1 = Some(TunnelProxyInfo {
           next_proxy_peer : None,
@@ -672,6 +847,9 @@ impl<E : ExtRead, P : Peer> ExtRead for TunnelReaderExt<E, P> {
        }), // to be dest
 
        _ => {
+
+ // TODO  here read previous_id for now always something (0 if none)
+ 
         try!(self.shadow.read_header(r));
         if tun_mode.is_het() {
           if let Some(true) = self.is_dest() {
@@ -737,35 +915,61 @@ pub struct TunnelWriterExt<E : ExtWrite, P : Peer> {
   shads: CompExtW<MultiWExt<TunnelShadowW<P>>,E>,
   shacont: Option<CompExtW<<P as Peer>::Shadow,E>>, // shadow for content when heterogenous enc and last : the reader need to know the size of its content but E is external
   error: Option<usize>, // possible error hop to report
+  error_routes: Vec<TunnelWriterExt<E,P>>, // when error routes (header only) are included in header
+  reply_route: Option<Box<TunnelWriterExt<E,P>>>, // TODO this could be unboxed -> unneeded? (need parametric reply type to either None or Self
   mode: TunnelMode,
   state: TunnelState,
+  current_cache_id: Vec<u8>,
 }
 impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
   #[inline]
   pub fn as_writer<'a,'b,W : Write>(&'b mut self, w : &'a mut W) -> TunnelWriter<'a, 'b, E, P, W> {
     CompW::new(w,self)
   }
-  // new
-  pub fn new(peers : &[&P], e : E, mode : TunnelMode, state : TunnelState, error : Option<usize>, 
+  /// new
+  /// error route is a single route but could switch to multiple route : currently same route (up to
+  /// peer is use for all possible error (which is bad), if none and we need error reply original
+  /// route is used
+  ///
+  /// TODO design is pretty bad : error route should only have value for bitunnel (tunnel is same
+  /// route),  similarily tunnel reply route should always be none : TODO specialize norep new in
+  /// front of generic new (with this we could do strange conf like tunnel with multiple error
+  /// route).
+  /// Plus it seems that reply state makes no sense at all (use in proxy but lightweight version)
+  pub fn new(peers : &[(usize,&P)], e : E, mode : TunnelMode, state : TunnelState, error : Option<usize>, 
     headmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
     contmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
-    error_route : Option<&[&P]>,
+    error_route : Option<&[(usize,&P)]>,
+    reply_route : Option<&[(usize,&P)]>, // for bitunnel only
+    current_cache_id : Vec<u8>, // TODO optional (currently if not use empty vec)
   ) -> TunnelWriterExt<E, P> {
-  
+    let reply = TunnelState::QError == state;
     let nbpeer = peers.len();
     let mut shad = Vec::with_capacity(nbpeer - 1);
+    let mut reply_route = None;
+    let mut error_routes = Vec::new();
 
     if let TunnelMode::NoTunnel = mode {
       // no shadow
     } else {
-      let mut err_h = mode.errorhandling_mode(peers, error_route);
+      let mut err_h = mode.errhandling_infos(peers, error_route);
       let mut thrng = thread_rng();
       let mut geniter = thrng.gen_iter();
       let mut next_proxy_peer = None;
 
       let mut err_ix = 0;
-      for i in  (1 .. peers.len()).rev() { // do not add first (is origin)
-        let err = err_h.pop().unwrap(); // err_h is peers.len - 1, iter backward so pop ok
+      let mut it1 = 
+        0 .. peers.len() -1;
+      let mut it2 = 
+        (1 .. peers.len()).rev();
+      // TODO macro instead of fat pointer?? to avoid duplicate loop
+      let it : &mut Iterator<Item=usize> = if reply {
+        &mut it1
+      } else {
+        &mut it2
+      };
+      for i in it { // do not add first (is origin)
+        let err = err_h.pop().unwrap_or(ErrorHandlingInfo::NoHandling); // err_h is peers.len - 1, iter backward so pop ok
         let p = peers.get(i).unwrap();
         let tpi = TunnelProxyInfo {
           next_proxy_peer : next_proxy_peer,
@@ -773,8 +977,8 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
           tunnel_id_failure : None, // if set that is a failure
           error_handle : err,
         };
-        next_proxy_peer = Some(p.to_address());
-        let mut s = p.get_shadower(true);
+        next_proxy_peer = Some(p.1.to_address());
+        let mut s = p.1.get_shadower(true);
         if mode.is_het() {
           s.set_mode(headmode.clone());
         } else {
@@ -782,10 +986,58 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
         }
         shad.push(TunnelShadowW(s, tpi));
       }
+      reply_route = match mode {
+        TunnelMode::NoRepTunnel(_,_,_) => None,
+        _ => panic!("unimplemented"),
+      };
+      if !reply && mode.insert_error_route() {
+        let error_route_len = error_route.map(|er|er.len()).unwrap_or(0);
+        // increasing length
+        for i in 1..peers.len() - 1 { // not for origin and dest
+          let w = if error_route_len == 0 {
+            // same route use for reply
+            Self::new(
+              &peers[0..i],  // TODO need reverse 
+              e.clone(),
+              TunnelMode::NoRepTunnel(0,TunnelShadowMode::Full,ErrorHandlingMode::NoHandling),  // No reply in norep tunnel
+              TunnelState::QError,
+              None,
+              headmode.clone(),
+              contmode.clone(),
+              None,
+              None,
+              Vec::new(), // no tcid for error or reply in different route
+            )
+          } else {
+
+            let rlen = if i > error_route_len - 1 {
+              error_route_len - 1
+            } else {
+              i
+            };
+
+            Self::new(
+              &error_route.as_ref().unwrap()[0..rlen], // TODO need reverse 
+              e.clone(),
+              TunnelMode::NoRepTunnel(0,TunnelShadowMode::Full,ErrorHandlingMode::NoHandling), 
+              TunnelState::QError,
+              None,
+              headmode.clone(),
+              contmode.clone(),
+              None,
+              None,
+              Vec::new(), // no tcid for error or reply in different route
+            )
+          };
+          error_routes.push(w);
+
+        }
+
+      }
     }
-    let shacont = if mode.is_het() {
+    let shacont = if !reply && mode.is_het() {
       peers.last().map(|p|{
-        let mut s = p.get_shadower(true);
+        let mut s = p.1.get_shadower(true);
         s.set_mode(contmode.clone());
         CompExtW(s,e.clone())
       })
@@ -798,6 +1050,9 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
       error: error,
       mode: mode,
       state: state,
+      reply_route : reply_route,
+      error_routes : error_routes,
+      current_cache_id : current_cache_id,
     }
   }
 }
@@ -810,6 +1065,10 @@ impl<E : ExtWrite, P : Peer> ExtWrite for TunnelWriterExt<E, P> {
     if let TunnelMode::NoTunnel = self.mode {
       Ok(())
     } else {
+    // write previous_id (current id)
+    if self.mode.do_cache() {
+      try!(bin_encode(&self.current_cache_id, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    }
     try!(self.shads.write_header(w));
     match self.shacont.as_mut() {
       Some (s) => {
@@ -912,7 +1171,6 @@ impl<E : ExtRead, P : Peer> ExtRead for TunnelShadowR<E,P> {
   }
 }
 
- 
 /// iterate on it to empty reader into sender  and flush with additional content (shadow is same kind for reader (ourself) and dest as a tunnel is
 /// using only on kind).
 ///(do not write header and behave according to mode)
@@ -920,6 +1178,9 @@ impl<E : ExtRead, P : Peer> ExtRead for TunnelShadowR<E,P> {
 /// TunnelReaderExt must have already read its header from R (otherwhise it is unknow if we can
 /// proxy or not).
 /// TODO er and ew are used only for het, maybe split function in two.
+///
+/// For write error read pursue (and write should fail a lot in between) : that way reader is in
+/// right position in case of writing error.
 pub fn proxy_content<
   P : Peer,
   ER : ExtRead,
@@ -928,54 +1189,152 @@ pub fn proxy_content<
   W : Write> ( 
   buf : &mut [u8], 
   tre : &mut TunnelReaderExt<ER,P>,
-  mut er : ER,
-  mut eproxy: EW,
-  mut ew : EW,
+  mut er : ER, // only for het mode read of payload
+  mut err : ER, // only for return route
+  mut eproxy: EW, // end delimiter only
+  mut ew : EW, // only for het mode write of payload
   r : &mut R,
-  w : &mut W) -> Result<()> {
+  w : &mut W,
+  current_cache_id : &[u8],
+  ) -> Result<()> {
+    let mut error : Option<IoError> = None; 
     {
-    try!(bin_encode(&tre.state, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
-    try!(bin_encode(&tre.mode, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
-    try!(eproxy.write_header(w));
+    bin_encode(&tre.state, w, SizeLimit::Infinite).unwrap_or_else(|e|{error = Some(From::from(BincErr(e)))});
+
+    // TODO QErr and QErr cache mode -> need to put state out -> proxy content or proxy_error
+    
+    bin_encode(&tre.mode, w, SizeLimit::Infinite).unwrap_or_else(|e|{error = Some(From::from(BincErr(e)))});
+
+    // write previous_id (current id)
+    if tre.mode.do_cache() {
+      bin_encode(&current_cache_id, w, SizeLimit::Infinite).unwrap_or_else(|e|{error = Some(From::from(BincErr(e)))});
+    }
+ 
+    eproxy.write_header(w).unwrap_or_else(|e|{error = Some(e)});
     let mut sr = 1;
     while sr != 0 {
       sr = try!(tre.read_from(r, buf));
-      let mut sw = 0;
-      while sw < sr {
-        let ssw = try!(eproxy.write_into(w,&buf[sw..sr - sw]));
-        if ssw == 0 {
-          return Err(IoError::new(IoErrorKind::Other, "Proxying failed, it seems we do not write all content"));
-        }
-        sw += ssw;
-      }
+      eproxy.write_all_into(w,&buf[..sr]).unwrap_or_else(|e|{error = Some(e)});
     }
     try!(tre.read_end(r));
     }
-    try!(eproxy.write_end(w));
-    try!(eproxy.flush_into(w));
+    eproxy.write_end(w).unwrap_or_else(|e|{error = Some(e)});
+    eproxy.flush_into(w).unwrap_or_else(|e|{error = Some(e)});
     // for het we only proxied the layered header : need to proxy the payload (end write of one
     // terminal shadow) : we read with end handling and write with same end handling
     if tre.mode.is_het() {
       try!(er.read_header(r));
-      try!(ew.write_header(w));
+      ew.write_header(w).unwrap_or_else(|e|{error = Some(e)});
       let mut sr = 1;
       while sr != 0 {
         sr = try!(er.read_from(r, buf));
-        let mut sw = 0;
-        while sw < sr {
-          let ssw = try!(ew.write_into(w,&buf[sw..sr - sw]));
-          if ssw == 0 {
-            return Err(IoError::new(IoErrorKind::Other, "Proxying failed, it seems we do not write all content"));
-          }
-          sw += ssw;
-        }
+        ew.write_all_into(w,&buf[..sr]).unwrap_or_else(|e|{error = Some(e)});
       }
       try!(er.read_end(r));
-      try!(ew.write_end(w));
-      try!(ew.flush_into(w));
+      ew.write_end(w).unwrap_or_else(|e|{error = Some(e)});
+      ew.flush_into(w).unwrap_or_else(|e|{error = Some(e)});
+    }
+    // possible reply frame
+    if tre.mode.insert_error_route() {
+      if bin_decode::<_,<P as KeyVal>::Key>(r, SizeLimit::Infinite).is_err(){warn!("error while reading reply error dest of proxied message : ignoring");}
+      err.read_header(r).unwrap_or_else(|_|warn!("error while reading reply error head of proxied message : ignoring"));
+      err.read_end(r).unwrap_or_else(|e|warn!("error while reading reply error of proxied message : ignoring"));
     }
 
-  Ok(())
+    if error.is_none() {
+      Ok(())
+    } else {
+      Err(error.unwrap())
+    }
+}
+
+
+/// If dest peer is missing, it will be use to consume reader instead of proxy_content.
+/// consume indicate what need to be read
+/// In all case to use for reading possible replyroute first dest
+pub fn flush_read_on_proxy_error<
+  P : Peer,
+  ER : ExtRead,
+  R : Read,
+  > (
+  tre : &mut TunnelReaderExt<ER,P>,
+  mut er : ER,
+  r : &mut R,
+  consume : bool,
+  ) -> Result<Option<<P as KeyVal>::Key>> {
+    // empty reader first TODO maybe an issue if already call and frame delimiter read_end reinit
+    // frame reading : TODO assert frame delimiter do not reinit at read end but at read() only
+    if consume {
+    try!(tre.read_end(r));
+    if tre.mode.is_het() {
+    try!(er.read_header(r));
+    try!(er.read_end(r));
+    }
+    }
+    if tre.mode.insert_error_route() {
+      let dest = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
+      Ok(Some(dest))
+    } else {
+      Ok(None)
+    }
+}
+
+
+/// error reporting function, similar to proxy in design, the header has already been read (when using flush_read_on_proxy_error), and proxy failed at some point, 
+pub fn report_error<
+  P : Peer,
+  ER : ExtRead,
+  R : Read,
+  //EW : ExtWrite,
+  W : Write> ( 
+  buf : &mut [u8], 
+  tre : &mut TunnelReaderExt<ER,P>,
+  mut err : ER, // only for reading of return route if needed
+  r : &mut R,
+  w : &mut W, // w is for reply in reply route (error_read_dest has been called before)
+  ) -> Result<()> {
+
+    let errorh_mode = tre.mode.errhandling_mode();
+    let state = match errorh_mode {
+      ErrorHandlingMode::NoHandling => return Ok(()), // should not be called (
+      ErrorHandlingMode::KnownDest(_) => {
+        panic!("TODO send as normal tunnel with info : not implemented currently as it is strange to use knowndest on a hop");
+      },
+      ErrorHandlingMode::ErrorRoute => TunnelState::QError,
+      ErrorHandlingMode::ErrorCachedRoute => TunnelState::QErrorCached,
+    };
+/*    let state = if tre.mode.insert_error_route() {
+//    tunnelmode := TunnelState TunnelMode
+      TunnelState::QError
+    } else {
+      TunnelState::QErrorCached
+    };*/
+    // actual error report
+
+    try!(bin_encode(&state, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+//    try!(bin_encode(&tre.mode, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+//    tunnelState rrn
+
+    if state == TunnelState::QError {
+      try!(err.read_header(r));
+      let mut sr = 1;
+      while sr != 0 {
+        sr = try!(err.read_from(r, buf));
+        try!(w.write_all(&buf[..sr]));
+      }
+      try!(err.read_end(r));
+//      try!(w.flush()); No flush here
+      Ok(())
+
+    } else { // QErrorCached
+//   TunnelState tci0 (1 (1 errorcode3))
+      let ecode = tre.error_code();
+      let ptci = tre.previous_tunnelid();
+      try!(bin_encode(&ptci, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+      try!(bin_encode(&ecode, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+//      try!(w.flush()); No flush here
+      Ok(())
+    }
 }
 
 

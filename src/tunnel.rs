@@ -584,12 +584,13 @@ impl TunnelMode {
   }
  
   /// return a vec of error handling info starting at first peer (route start at ourself) and
-  /// ending at dest (dest is reply info)
+  /// ending at dest (dest is reply info (for simple ack when cached and possible route ack only if norep))
   /// error_route if it differs from route, note that we use a single error route for all hop,
   /// using multiple error route could be better. Similarily the route length decrease depending on
   /// error location (max length is position of hop : this could also change).
   pub fn errhandling_infos<P : Peer>(&self, route : &[(usize,&P)], error_route : Option<&[(usize,&P)]>) -> Vec<ErrorHandlingInfo<P>> {
-     let mut res = vec![ErrorHandlingInfo::NoHandling; route.len() - 1];
+     // dest err handling is used as a possible ack (val)
+     let mut res = vec![ErrorHandlingInfo::NoHandling; route.len()];
 //     let error_route_len = error_route.map(|er|er.len()).unwrap_or(0);
      match self {
       &TunnelMode::NoTunnel => (),
@@ -606,10 +607,10 @@ impl TunnelMode {
         match b {
           &ErrorHandlingMode::NoHandling => (),
           &ErrorHandlingMode::KnownDest(ref ob) => {
-            res[route.len() - 2] = ErrorHandlingInfo::KnownDest(route[0].1.get_key(), ob.as_ref().map(|b|(**b).clone()));
+            res[route.len() - 1] = ErrorHandlingInfo::KnownDest(route[0].1.get_key(), ob.as_ref().map(|b|(**b).clone()));
           },
           &ErrorHandlingMode::ErrorCachedRoute => {
-            for i in 0..route.len() - 1 {
+            for i in 0..route.len() {
               // write error code
               res[i] = ErrorHandlingInfo::ErrorCachedRoute(route.get(i).unwrap().0);
             }
@@ -618,7 +619,7 @@ impl TunnelMode {
           },
 
           &ErrorHandlingMode::ErrorRoute => {
-            for i in 0..route.len() - 1 {
+            for i in 0..route.len() {
            // if error_route_len == 0 {
               // write error code
               res[i] = ErrorHandlingInfo::ErrorRoute(route.get(i).unwrap().0);
@@ -807,7 +808,7 @@ pub fn proxy_cached_err<R : Read, W : Write> (r : &mut R, w : &mut W, from_cache
   let err_code : usize = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
   try!(bin_encode(&TunnelState::QErrorCached, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
   try!(bin_encode(&from_cached_id, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
-  try!(bin_encode(&err_code, w, SizeLimit::Infinite).map_err(|e|BincErr(e))); // TODO xor cached_errcode
+  try!(bin_encode(&(xor_err_code(err_code,cached_errcode)), w, SizeLimit::Infinite).map_err(|e|BincErr(e))); // TODO xor cached_errcode
   Ok(())
 }
 /// get peer index for error
@@ -815,12 +816,13 @@ pub fn proxy_cached_err<R : Read, W : Write> (r : &mut R, w : &mut W, from_cache
 pub fn identify_cached_errcode<R : Read,P> (r : &mut R, route : Vec<(usize,&P)>) -> Result<usize> {
   let mut err_code : usize = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
   let mut i = 1;
-  for c in route {
-    if err_code == c.0 {
+  for c in &route[1..] {
+    err_code = xor_err_code(err_code, c.0); // TODO xor cached_error
+    if err_code == 0 {
       return Ok(i);
     }
 
-    err_code = err_code; // TODO xor cached_error
+
     i += 1;
   }
   Err(IoError::new (
@@ -828,7 +830,11 @@ pub fn identify_cached_errcode<R : Read,P> (r : &mut R, route : Vec<(usize,&P)>)
     "Wrong xor error code identifier",
   ))
 }
- 
+#[inline]
+fn xor_err_code(c1 : usize, c2 : usize) -> usize {
+  //println!("xor call : {} with {} = {}", c1, c2, c1 ^ c2);
+  c1 ^ c2
+}
 impl<E : ExtRead, P : Peer> ExtRead for TunnelReaderExt<E, P> {
   #[inline]
   fn read_header<R : Read>(&mut self, r : &mut R) -> Result<()> {

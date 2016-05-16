@@ -1,3 +1,5 @@
+//!
+//!
 //! tunnel : primitive function for tunnel (for both modes
 //!
 //! TODO reader and writer with possible two different size limiter for het mode (head limiter
@@ -359,6 +361,7 @@ use keyval::KeyVal;
 use peer::Peer;
 use peer::{
   Shadow,
+  ShadowSim,
   ShadowReadOnce,
   ShadowWriteOnce,
   ShadowWriteOnceL,
@@ -366,6 +369,7 @@ use peer::{
   new_shadow_write_once,
 };
 use std::io::{
+  Cursor,
   Write,
   Read,
   Result,
@@ -375,7 +379,7 @@ use std::io::{
 use readwrite_comp::{
   MultiW,
   MultiWExt,
-  new_multiw,
+  MultiRExt,
   ExtRead,
   ExtWrite,
   CompW,
@@ -503,7 +507,7 @@ pub enum ErrorHandlingInfo<P : Peer> {
   NoHandling,
   KnownDest(<P as KeyVal>::Key, Option<TunnelMode>),
   ErrorRoute(usize), // route headers are to be read afterward, usize is errorcode, address is in cache (tci is included in frame)
-  ErrorCachedRoute(usize), // usize is error code
+  ErrorCachedRoute(usize), // usize is error code, and shadow is sim shadow of peer for reply
 }
 impl<P : Peer> ErrorHandlingInfo<P> {
   #[inline]
@@ -517,6 +521,7 @@ impl<P : Peer> ErrorHandlingInfo<P> {
 
 }
 impl TunnelMode {
+
   /// do we send cache id to next peer TODO include tunnelstate consideration (QueryCached and
   /// ReplyCached). -> may simply be the same (just control if route is dropped and change mode
   /// (set to error cachedroute automatically)
@@ -592,33 +597,22 @@ impl TunnelMode {
      // dest err handling is used as a possible ack (val)
      let mut res = vec![ErrorHandlingInfo::NoHandling; route.len()];
 //     let error_route_len = error_route.map(|er|er.len()).unwrap_or(0);
-     match self {
+     
+     let need_cached_repkey = if let &TunnelMode::Tunnel(..) = self {
+       true 
+     } else {false};
+     let gen = match self {
       &TunnelMode::NoTunnel => (),
-      &TunnelMode::Tunnel(_,_, ref b) => {
-        match b {
-          &ErrorHandlingMode::NoHandling => (),
-          _ => panic!("TODO implement"),
-        }
-      },
       &TunnelMode::BiTunnel(_,_,_, ref b) => {
         panic!("TODO implement");
       },
-      &TunnelMode::NoRepTunnel(_,_, ref b) => {
+      &TunnelMode::NoRepTunnel(_,_, ref b) | &TunnelMode::Tunnel(_,_, ref b) => {
         match b {
-          &ErrorHandlingMode::NoHandling => (),
-          &ErrorHandlingMode::KnownDest(ref ob) => {
+          &ErrorHandlingMode::NoHandling if !need_cached_repkey => (),
+          &ErrorHandlingMode::KnownDest(ref ob) if !need_cached_repkey => {
             res[route.len() - 1] = ErrorHandlingInfo::KnownDest(route[0].1.get_key(), ob.as_ref().map(|b|(**b).clone()));
           },
-          &ErrorHandlingMode::ErrorCachedRoute => {
-            for i in 0..route.len() {
-              // write error code
-              res[i] = ErrorHandlingInfo::ErrorCachedRoute(route.get(i).unwrap().0);
-            }
-            // No known dest (norep could be use as anonym without reply
-//            res[route.len() - 2] = ErrorHandlingInfo::KnownDest(route[0].1.get_key(), None)
-          },
-
-          &ErrorHandlingMode::ErrorRoute => {
+          &ErrorHandlingMode::ErrorRoute if !need_cached_repkey => {
             for i in 0..route.len() {
            // if error_route_len == 0 {
               // write error code
@@ -640,6 +634,17 @@ impl TunnelMode {
             };*/
             }
           },
+          // Tunnel & cached error
+          _ => {
+            for i in 0..route.len() {
+
+              // write error code
+              res[i] = ErrorHandlingInfo::ErrorCachedRoute(route.get(i).unwrap().0);
+            }
+            // No known dest (norep could be use as anonym without reply
+//            res[route.len() - 2] = ErrorHandlingInfo::KnownDest(route[0].1.get_key(), None)
+          },
+
         }
       },
      };
@@ -669,12 +674,14 @@ impl TunnelMode {
   }
 
 }
+
 impl TunnelShadowMode {
   // do we use distinct encoding for content
   pub fn is_het(&self) -> bool {
     &TunnelShadowMode::Last == self
   }
 }
+
 /*
 #[derive(RustcDecodable,RustcEncodable,Debug,Clone)]
 /// QueryMode info to use in message between peers.
@@ -746,8 +753,9 @@ pub struct TunnelReaderExt<E : ExtRead, P : Peer> {
   shacont: <P as Peer>::Shadow, // our decoding
   shanocont: E, // for proxying
   pub mode: TunnelMode,
-  state: TunnelState,
+  pub state: TunnelState,
   pub previous_cacheid : Vec<u8>,
+  pub rep_key : Option<<<P as Peer>::Shadow as Shadow>::ShadowSim>,
 }
 
 impl<E : ExtRead, P : Peer> TunnelReaderExt<E, P> {
@@ -787,6 +795,7 @@ impl<E : ExtRead + Clone, P : Peer> TunnelReaderExt<E, P> {
       mode : m,
       state : s,
       previous_cacheid : Vec::new(), // TODO switch to option??
+      rep_key : None,
     }
   }
 }
@@ -799,6 +808,17 @@ pub fn read_state<R : Read> (r : &mut R) -> Result<TunnelState> {
 #[inline]
 pub fn read_cacheid<R : Read> (r : &mut R) -> Result<Vec<u8>> {
   Ok(try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e))))
+}
+
+/// for proxy get cache shadow sim for possible reply (tunnelmode)
+/// Also used when dest to reply (except key is after message content in this case
+pub fn read_reply_key<R : Read, P : Peer> (r : &mut R, tm : &TunnelMode) -> Result<Option<<<P as Peer>::Shadow as Shadow>::ShadowSim>> {
+  if let &TunnelMode::Tunnel(..) = tm {
+    let shadsim = try!(<<<P as Peer>::Shadow as Shadow>::ShadowSim as ShadowSim>::init_from_shadow_simkey(r));
+    Ok(Some(shadsim))
+  } else {
+    Ok(None)
+  }
 }
 
 
@@ -839,11 +859,23 @@ impl<E : ExtRead, P : Peer> ExtRead for TunnelReaderExt<E, P> {
   #[inline]
   fn read_header<R : Read>(&mut self, r : &mut R) -> Result<()> {
     let tun_state = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
+
+    if let TunnelState::ReplyCached = tun_state {
+      self.state = tun_state;
+
+      // misvious use of previous_cacheid
+      self.previous_cacheid = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
+      return Ok(());
+    }
+ 
+
+
     let tun_mode : TunnelMode = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
     // write previous_id (current id)
     if tun_mode.do_cache() {
       self.previous_cacheid = try!(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e)));
     }
+    let mut rep_key : Option<<<P as Peer>::Shadow as Shadow>::ShadowSim> = None;
     match tun_mode {
        TunnelMode::NoTunnel => self.shadow.1 = Some(TunnelProxyInfo {
           next_proxy_peer : None,
@@ -854,9 +886,20 @@ impl<E : ExtRead, P : Peer> ExtRead for TunnelReaderExt<E, P> {
 
        _ => {
 
- // TODO  here read previous_id for now always something (0 if none)
  
-        try!(self.shadow.read_header(r));
+    try!(self.shadow.read_header(r));
+    // read in start of enc shadow reader (as a tunnel info in reader)
+    rep_key = if let TunnelMode::Tunnel(..) = tun_mode {
+      match tun_state{
+        TunnelState::QueryCached | TunnelState::QueryOnce => 
+        {
+          let mut inw  = CompExtRInner(r, &mut self.shadow);
+          Some(try!(<<<P as Peer>::Shadow as Shadow>::ShadowSim as ShadowSim>::init_from_shadow_simkey(&mut inw)))
+        },
+        _ => None,
+      }
+    } else {None};
+
         if tun_mode.is_het() {
           if let Some(true) = self.is_dest() {
             // try to read shacont header
@@ -871,6 +914,7 @@ impl<E : ExtRead, P : Peer> ExtRead for TunnelReaderExt<E, P> {
     };
     self.mode = tun_mode;
     self.state = tun_state;
+    self.rep_key = rep_key;
     Ok(())
   }
  
@@ -932,7 +976,9 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
   pub fn as_writer<'a,'b,W : Write>(&'b mut self, w : &'a mut W) -> TunnelWriter<'a, 'b, E, P, W> {
     CompW::new(w,self)
   }
-  /// new
+
+
+
   /// error route is a single route but could switch to multiple route : currently same route (up to
   /// peer is use for all possible error (which is bad), if none and we need error reply original
   /// route is used
@@ -942,19 +988,27 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
   /// front of generic new (with this we could do strange conf like tunnel with multiple error
   /// route).
   /// Plus it seems that reply state makes no sense at all (use in proxy but lightweight version)
-  pub fn new(peers : &[(usize,&P)], e : E, mode : TunnelMode, state : TunnelState, error : Option<usize>, 
+  /// TODO split (here lot of non mandatory
+  pub fn new<ER : ExtRead> (peers : &[(usize,&P)], e : E, mode : TunnelMode, state : TunnelState, error : Option<usize>, 
     headmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
     contmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
     error_route : Option<&[(usize,&P)]>,
     reply_route : Option<&[(usize,&P)]>, // for bitunnel only
     current_cache_id : Vec<u8>, // TODO optional (currently if not use empty vec)
-  ) -> TunnelWriterExt<E, P> {
+    reader_limit : Option<ER>,
+  ) -> Result<(TunnelWriterExt<E, P>, Option<TunnelCachedReaderExt<ER,P>>)> {
     let reply = TunnelState::QError == state;
     let nbpeer = peers.len();
     let mut shad = Vec::with_capacity(nbpeer - 1);
     let mut reply_route = None;
     let mut error_routes = Vec::new();
-
+    let mut add_symshad = if let TunnelMode::Tunnel(..) = mode {
+      match state {
+        TunnelState::QueryCached | TunnelState::QueryOnce => Some(Vec::new()),
+        _ => None,
+      }
+    } else {None};
+ 
     if let TunnelMode::NoTunnel = mode {
       // no shadow
     } else {
@@ -990,19 +1044,35 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
         } else {
           s.set_mode(contmode.clone());
         }
-        shad.push(TunnelShadowW(s, tpi));
+        
+        match add_symshad.as_mut() {
+          Some(ref mut v) => {
+            let shadsim = try!(<<P as Peer>::Shadow as Shadow>::new_shadow_sim());
+            let mut buf = Cursor::new(Vec::new());
+            try!(shadsim.send_shadow_simkey(&mut buf)); 
+            let ibuf = buf.into_inner();
+            println!("key {:?}",ibuf);
+            shad.push(TunnelShadowW(s, tpi,Some(ibuf)));
+            v.push(shadsim);
+          },
+          None => {
+            shad.push(TunnelShadowW(s, tpi,None));
+          },
+        }
       }
       reply_route = match mode {
-        TunnelMode::NoRepTunnel(_,_,_) => None,
+        TunnelMode::NoRepTunnel(..) => None,
+        TunnelMode::Tunnel(..) => None,
         _ => panic!("unimplemented"),
       };
       if !reply && mode.insert_error_route() {
         let error_route_len = error_route.map(|er|er.len()).unwrap_or(0);
         // increasing length
         for i in 1..peers.len() - 1 { // not for origin and dest
+          let typed_none_read : Option<ER> = None;
           let w = if error_route_len == 0 {
             // same route use for reply
-            Self::new(
+            try!(Self::new(
               &peers[0..i],  // TODO need reverse 
               e.clone(),
               TunnelMode::NoRepTunnel(0,TunnelShadowMode::Full,ErrorHandlingMode::NoHandling),  // No reply in norep tunnel
@@ -1013,7 +1083,8 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
               None,
               None,
               Vec::new(), // no tcid for error or reply in different route
-            )
+              typed_none_read,
+            )).0
           } else {
 
             let rlen = if i > error_route_len - 1 {
@@ -1022,7 +1093,7 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
               i
             };
 
-            Self::new(
+            try!(Self::new(
               &error_route.as_ref().unwrap()[0..rlen], // TODO need reverse 
               e.clone(),
               TunnelMode::NoRepTunnel(0,TunnelShadowMode::Full,ErrorHandlingMode::NoHandling), 
@@ -1033,7 +1104,8 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
               None,
               None,
               Vec::new(), // no tcid for error or reply in different route
-            )
+              typed_none_read,
+            )).0
           };
           error_routes.push(w);
 
@@ -1050,7 +1122,15 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
     } else {
       None
     };
-    TunnelWriterExt {
+
+
+    // reader
+    let or = add_symshad.map(|mut v|{
+      //v.reverse();
+      new_dest_cached_reader_ext::<ER, P>(v,reader_limit.unwrap())
+    });
+
+    Ok((TunnelWriterExt {
       shads : CompExtW(MultiWExt::new(shad),e.clone()),
       shacont : shacont,
       error: error,
@@ -1059,7 +1139,7 @@ impl<E : ExtWrite + Clone, P : Peer> TunnelWriterExt<E, P> {
       reply_route : reply_route,
       error_routes : error_routes,
       current_cache_id : current_cache_id,
-    }
+    }, or))
   }
 }
 
@@ -1126,18 +1206,45 @@ impl<E : ExtWrite, P : Peer> ExtWrite for TunnelWriterExt<E, P> {
   }
 }
 
+
+
+
 /// override shadow for tunnel with custom ExtRead and ExtWrite over Shadow
 /// First ExtWrite is bytes_wr to use for proxying content (get end of encoded stream).
-pub struct TunnelShadowW<P : Peer> (pub <P as Peer>::Shadow, pub TunnelProxyInfo<P>);
+/// Last is possible shadow key for reply
+pub struct TunnelShadowW<P : Peer> (pub <P as Peer>::Shadow, pub TunnelProxyInfo<P>, pub Option<Vec<u8>>);
 //pub struct TunnelShadowW<E : ExtWrite, P : Peer> (pub CompExtW<E,<P as Peer>::Shadow>, pub TunnelProxyInfo<P>);
+// last is possible initialized sim shadow when reading info
 pub struct TunnelShadowR<E : ExtRead, P : Peer> (pub CompExtR<<P as Peer>::Shadow,E>, pub Option<TunnelProxyInfo<P>>);
 
 impl<P : Peer> ExtWrite for TunnelShadowW<P> {
   #[inline]
   fn write_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
+
+    // write basic tunnelinfo and content
     try!(self.0.write_header(w));
     let mut inw  = CompExtWInner(w, &mut self.0);
+
+
     try!(bin_encode(&self.1, &mut inw, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+
+    // write tunnel simkey
+    if self.2.is_some() {
+
+          //let shadsim = <<P as Peer>::Shadow as Shadow>::new_shadow_sim().unwrap();
+      let mut buf :Vec<u8> = Vec::new();
+      inw.write_all(&self.2.as_ref().unwrap()[..]);
+//      try!(self.2.as_mut().unwrap().send_shadow_simkey(&mut inw)); 
+/*      let mut cbuf = Cursor::new(buf);
+      println!("one");
+      try!(self.2.as_mut().unwrap().send_shadow_simkey(&mut cbuf));
+ let mut t = cbuf.into_inner();
+ println!("{:?}",t);
+      inw.write_all(&mut t [..]);
+    } else {
+      println!("two");*/
+    }
+
     Ok(())
   }
   #[inline]
@@ -1344,7 +1451,70 @@ pub fn report_error<
 }
 
 
+// TODO Tunnel_Cached_Writer (write header with tunn_mode... plus encode with shadow sim)
+pub struct TunnelCachedWriterExt<E : ExtWrite, P : Peer> {
+  shads: CompExtW<<<P as Peer>::Shadow as Shadow>::ShadowSim,E>,
+  dest_cache_id: Vec<u8>,
+  // TODO for long tunnel announce_cache_id: Vec<u8>,// announce for possible reply (establishing tunnel)
+}
 
+impl<E : ExtWrite, P : Peer> TunnelCachedWriterExt<E,P> {
+  pub fn new (sim : <<P as Peer>::Shadow as Shadow>::ShadowSim, next_cache_id : Vec<u8>, limit : E) -> Self
+  {
+    TunnelCachedWriterExt {
+      shads : CompExtW(sim, limit),
+      dest_cache_id : next_cache_id,
+    }
+  }
+}
+
+
+impl<E : ExtWrite, P : Peer> ExtWrite for TunnelCachedWriterExt<E,P> {
+
+  #[inline]
+  fn write_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    try!(bin_encode(&TunnelState::ReplyCached, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    try!(bin_encode(&self.dest_cache_id, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    self.shads.write_header(w)
+  }
+  #[inline]
+  fn write_into<W : Write>(&mut self, w : &mut W, cont: &[u8]) -> Result<usize> {
+    self.shads.write_into(w,cont)
+  }
+  #[inline]
+  fn write_all_into<W : Write>(&mut self, w : &mut W, buf : &[u8]) -> Result<()> {
+    self.shads.write_all_into(w, buf)
+  }
+  #[inline]
+  fn flush_into<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    self.shads.flush_into(w)
+  }
+  #[inline]
+  fn write_end<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    self.shads.write_end(w)
+  }
+}
+
+/**
+ * reader for a dest of tunnel cached
+ */
+pub type TunnelCachedReaderExt<E, P> = 
+  CompExtR<MultiRExt<<<P as Peer>::Shadow as Shadow>::ShadowSim>,E>;
+/*
+impl<E : ExtWrite, P : Peer> TunnelCachedWriterExt<E,P> {
+  pub fn new (sim : <<P as Peer>::Shadow as Shadow>::ShadowSim, next_cache_id : Vec<u8>, limit : E) -> Self
+  {
+    TunnelCachedWriterExt {
+      shads : CompExtW(sim, limit),
+      dest_cache_id : next_cache_id,
+    }
+  }
+}
+*/
+
+fn new_dest_cached_reader_ext<E : ExtRead, P : Peer> (sim : Vec<<<P as Peer>::Shadow as Shadow>::ShadowSim>, limit : E) -> TunnelCachedReaderExt<E,P> {
+  CompExtR(MultiRExt::new(sim), limit)
+}
 // create a tunnel writter
 // - list of peers (last one is dest)
 // - mode : TunnelMode

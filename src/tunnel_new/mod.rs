@@ -64,10 +64,15 @@ pub mod full;
 pub mod last;
 
 /// TODO rename to reply info ??
-pub trait Info : Encodable + Decodable + Clone + fmt::Debug {
+pub trait Info {
   /// if it retun true, there is a need to cache
   /// this info for reply or error routing
   fn do_cache (&self) -> bool;
+
+
+  fn write_in_header<W : Write>(&mut self, w : &mut W) -> Result<()>;
+  fn write_after<W : Write>(&mut self, w : &mut W) -> Result<()>;
+  fn get_reply_key(&self) -> Option<&Vec<u8>>;
 }
 
 pub trait Tunnel {
@@ -120,14 +125,14 @@ pub trait TunnelWriter<E : ExtWrite, P : Peer> {
   /// write state when state is needed 
   fn write_state<W : Write>(&mut self, &mut W) -> Result<()>;
 
-  /// write error info
-  fn write_error_info<W : Write>(&mut self, &mut W) -> Result<()>;
-  /// write reply info
-  fn write_reply_info<W : Write>(&mut self, &mut W) -> Result<()>;
-
   /// write connection info, currently use for caching of previous peer connection id (no encrypt
   /// on it). This is done at a between peers level (independant to tunnel)
   fn write_connect_info<W : Write>(&mut self, &mut W) -> Result<()>;
+/**
+ * write all simkey from its shads as content (when writing reply as replyonce)
+ * */
+ fn write_simkeys_into< W : Write>( &mut self, &mut W) -> Result<()>; 
+
 
 }
 
@@ -217,12 +222,24 @@ pub enum MultipleReplyInfo<P : Peer> {
 }
 
 impl<P : Peer> Info for MultipleReplyInfo<P> {
+  fn get_reply_key(&self) -> Option<&Vec<u8>> {
+    return None;
+  }
   fn do_cache(&self) -> bool {
     match self {
       &MultipleReplyInfo::CachedRoute(_) => true,
       _ => false,
     }
   }
+
+  fn write_in_header<W : Write>(&mut self, inw : &mut W) -> Result<()> {
+    try!(bin_encode(self, inw, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    Ok(())
+  }
+  fn write_after<W : Write>(&mut self, inw : &mut W) -> Result<()> {
+    Ok(())
+  }
+
 }
 
 impl<P : Peer> MultipleReplyInfo<P> {

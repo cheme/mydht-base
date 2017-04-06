@@ -42,16 +42,16 @@ pub struct Full {
   pub error_mode : MultipleReplyMode,
 }
 
-type Shadows<P : Peer, E : ExtWrite, TW : TunnelWriter<E,P>> = CompExtW<MultiWExt<TunnelShadowW<E, P,TW>>,E>;
+type Shadows<P : Peer, E : ExtWrite, RI : Info> = CompExtW<MultiWExt<TunnelShadowW<P,RI>>,E>;
+
 /**
  * No impl for instance when no error or no reply
  */
-pub struct FullW<RI : Info, EI : Info, P : Peer, E : ExtWrite, TW : TunnelWriter<E,P>> {
+pub struct FullW<RI : Info, EI : Info, P : Peer, E : ExtWrite > {
   state: TunnelState,
-  reply_info : RI,
   error_info : EI,
   current_cache_id: Option<Vec<u8>>,
-  shads: Shadows<P,E,TW>,
+  shads: Shadows<P,E,RI>,
 }
 
 pub struct FullR {
@@ -64,12 +64,11 @@ pub struct FullSRW {
 impl Full {
 
   pub fn new_rep
-    <RI : Info, EI : Info, P : Peer, E : ExtWrite, TW : TunnelWriter<E,P>> 
-    (&self, ri : RI, ei : EI, shads: Shadows<P,E,TW>) -> FullW<RI,EI,P,E,TW> {
+    <RI : Info, EI : Info, P : Peer, E : ExtWrite> 
+    (&self, ri : RI, ei : EI, shads: Shadows<P,E,RI>) -> FullW<RI,EI,P,E> {
     FullW {
       current_cache_id : None,
       state : TunnelState::QueryOnce,
-      reply_info : ri,
       error_info : ei,
       shads: shads,
     }
@@ -77,20 +76,19 @@ impl Full {
 
 
   pub fn new_no_rep
-    <RI : Info, EI : Info, P : Peer, E : ExtWrite, TW : TunnelWriter<E,P>> 
-    (&self, ri : RI, ei : EI, shads: Shadows<P,E,TW>) -> FullW<RI,EI,P,E,TW> {
+    <RI : Info, EI : Info, P : Peer, E : ExtWrite> 
+    (&self, ri : RI, ei : EI, shads: Shadows<P,E,RI>) -> FullW<RI,EI,P,E> {
     FullW {
       current_cache_id : None,
       state : TunnelState::ReplyOnce,
-      reply_info : ri,
       error_info : ei,
       shads: shads,
     }
   }
 
   pub fn new_with_sym
-    <RI : Info, EI : Info, P : Peer, E : ExtWrite, TW : TunnelWriter<E,P>, TC : TunnelCacheManager<FullSRW>> 
-    (&self, ri : RI, ei : EI, shads: Shadows<P,E,TW>, tc : &mut TC) -> FullW<RI,EI,P,E,TW> {
+    <RI : Info, EI : Info, P : Peer, E : ExtWrite, TC : TunnelCacheManager<FullSRW>> 
+    (&self, ri : RI, ei : EI, shads: Shadows<P,E,RI>, tc : &mut TC) -> FullW<RI,EI,P,E> {
     let comid = if ri.do_cache() || ei.do_cache() {
       let fsrw = FullSRW {    };
       Some(tc.storeW(fsrw))
@@ -100,7 +98,6 @@ impl Full {
     FullW{
       current_cache_id : comid,
       state : TunnelState::QueryCached,
-      reply_info : ri,
       error_info : ei,
       shads: shads,
     }
@@ -174,24 +171,13 @@ impl ExtRead for Full {
 }
 
 
-impl<E : ExtWrite, P : Peer, RI : Info, EI : Info, TW : TunnelWriter<E,P>> TunnelWriter<E, P> for FullW<RI,EI,P,E,TW> {
+impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelWriter<E, P> for FullW<RI,EI,P,E> {
   #[inline]
   fn write_state<W : Write>(&mut self, w : &mut W) -> Result<()> {
     try!(bin_encode(&self.state, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
     Ok(())
   }
-  #[inline]
-  fn write_error_info<W : Write>(&mut self, w : &mut W) -> Result<()> {
-    try!(bin_encode(&self.error_info, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
-    Ok(())
-  }
-  #[inline]
-  fn write_reply_info<W : Write>(&mut self, w : &mut W) -> Result<()> {
-      // useless ?? use for query too ??
-      try!(bin_encode(&self.reply_info, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
-      
-      Ok(())
-  }
+
   #[inline]
   fn write_connect_info<W : Write>(&mut self, w : &mut W) -> Result<()> {
     if let Some(cci) = self.current_cache_id.as_ref() {
@@ -200,12 +186,38 @@ impl<E : ExtWrite, P : Peer, RI : Info, EI : Info, TW : TunnelWriter<E,P>> Tunne
     Ok(())
   }
 
+ fn write_simkeys_into< W : Write>( &mut self, w : &mut W) -> Result<()> {
 
+  // not all key must be define
+  let len : usize = self.shads.0.inner_extwrites().iter().fold(0,|i,item|if item.rep.get_reply_key().is_some() {i+1} else {i});
+  try!(bin_encode(&len, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+  let mut key = None;
+  // copy/clone each key due to lifetime, this is not optimal
+  for i in 0..len {
+    match self.shads.0.inner_extwrites().get(i) {
+      Some(ref sh) => match sh.rep.get_reply_key() {
+        Some(sk) => if key.is_none() {
+          key = Some(sk.clone());
+        } else {
+          key.as_mut().map(|k|k.clone_from(&sk));
+        },
+        None => key = None,
+      },
+      None => key = None,
+    }
+    match key {
+      Some(ref k) => try!(self.shads.write_all_into(w, &k)),
+      None => (),
+    }
+
+  }
+  Ok(())
+}
 }
 
 // impl<E : ExtWrite, P : Peer, RI : Info> TunnelReplyWriter<E, P, RI> for FullSRW {}
 
-impl<E : ExtWrite, P : Peer, RI : Info, EI : Info, TW : TunnelWriter<E,P>> TunnelErrorWriter<E, P> for FullW<RI,EI,P,E,TW> {
+impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelErrorWriter<E, P> for FullW<RI,EI,P,E> {
 }
 
 
@@ -217,43 +229,41 @@ impl<E : ExtWrite, P : Peer, RI : Info, EI : Info, TW : TunnelWriter<E,P>> Tunne
 /// First ExtWrite is bytes_wr to use for proxying content (get end of encoded stream).
 /// next is possible shadow key for reply,
 /// And last is possible shadowroute for reply or error
-pub struct TunnelShadowW<E : ExtWrite, P : Peer,TW : TunnelWriter<E,P>> {
+pub struct TunnelShadowW<P : Peer, RI : Info> {
   shad : <P as Peer>::Shadow, 
+  rep : RI,
+}
+
+/// TODO implement Info
+/// TODO next split it (here it is MultiReply whichi is previous enum impl, purpose of refacto is
+/// getting rid of those enum (only if needed)
+pub struct ReplyInfo<E : ExtWrite, P : Peer,TW : TunnelWriter<E,P>> {
   info : TunnelProxyInfo<P>,
-  // this should be seen as a way to establish connection so for new rep -> TODO in reply info to?
+  // this should be seen as a way to establish connection so for new rep, replykey 
   replykey : Option<Vec<u8>>, 
   // reply route should be seen as a reply info : used to write the payload -> TODO redesign this
   replyroute : Option<(E,Box<TunnelWriterExt<E,P,TW>>)>,
   //replyroute : Option<Box<(E,TunnelWriterExt<E,P,TW>)>>,
 }
-//pub struct TunnelShadowW<E : ExtWrite, P : Peer> (pub <P as Peer>::Shadow, pub TunnelProxyInfo<P>, pub Option<Vec<u8>>, Option<(E,Box<TunnelWriterExt<E,P>>)>);
 
-/// Tunnel proxy info : tunnel info accessible for any peer
-#[derive(RustcDecodable,RustcEncodable,Debug,Clone)]
-pub struct TunnelProxyInfo<P : Peer> {
-  pub next_proxy_peer : Option<<P as Peer>::Address>,
-  pub tunnel_id : usize, // tunnelId change for every hop that is description tci
-  pub tunnel_id_failure : Option<usize>, // if set that is a failure TODO remove (never used)
-  pub error_handle : MultipleReplyInfo<P>, // error handle
-}
+impl<E : ExtWrite, P : Peer,TW : TunnelWriter<E,P>> Info for ReplyInfo<E,P,TW> {
+  
+  fn do_cache (&self) -> bool {
+    self.replykey.is_some()
+  }
 
-impl<E : ExtWrite, P : Peer, TW : TunnelWriter<E,P>> ExtWrite for TunnelShadowW<E,P, TW> {
-  #[inline]
-  fn write_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
-
-    // write basic tunnelinfo and content
-    try!(self.shad.write_header(w));
-    let mut inw  = CompExtWInner(w, &mut self.shad);
-
-
-    try!(bin_encode(&self.info, &mut inw, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+  fn get_reply_key(&self) -> Option<&Vec<u8>> {
+    self.replykey.as_ref()
+  }
+  fn write_in_header<W : Write>(&mut self, inw : &mut W) -> Result<()> {
+    try!(bin_encode(&self.info, inw, SizeLimit::Infinite).map_err(|e|BincErr(e)));
 
     // write tunnel simkey
     if self.replykey.is_some() {
 
           //let shadsim = <<P as Peer>::Shadow as Shadow>::new_shadow_sim().unwrap();
       let mut buf :Vec<u8> = Vec::new();
-      inw.write_all(&self.replykey.as_ref().unwrap()[..]);
+      try!(inw.write_all(&self.replykey.as_ref().unwrap()[..]));
 //      try!(self.2.as_mut().unwrap().send_shadow_simkey(&mut inw)); 
 /*      let mut cbuf = Cursor::new(buf);
       println!("one");
@@ -265,6 +275,55 @@ impl<E : ExtWrite, P : Peer, TW : TunnelWriter<E,P>> ExtWrite for TunnelShadowW<
       println!("two");*/
     }
 
+
+    Ok(())
+  }
+
+  fn write_after<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    match self.replyroute {
+      Some((ref mut limiter ,ref mut rr)) => {
+        {
+          let mut inw  = CompExtWInner(w,limiter);
+          // write header (simkey are include in headers)
+          try!(rr.write_header(&mut inw));
+          // write simkeys to read as dest (Vec<Vec<u8>>)
+          // currently same for error
+          // put simkeys for reply TODO only if reply expected : move to full reply route ReplyInfo
+          // impl -> Reply Info not need to be write into
+          try!(rr.0.write_simkeys_into(&mut inw));
+
+          try!(rr.write_end(&mut inw));
+        }
+        try!(limiter.write_end(w));
+        try!(limiter.flush_into(w));
+      }
+      None => ()
+    }
+    Ok(())
+  }
+}
+
+//pub struct TunnelShadowW<E : ExtWrite, P : Peer> (pub <P as Peer>::Shadow, pub TunnelProxyInfo<P>, pub Option<Vec<u8>>, Option<(E,Box<TunnelWriterExt<E,P>>)>);
+
+/// Tunnel proxy info : tunnel info accessible for any peer, the serializable/deser (and pretty
+/// common part) of reply info
+#[derive(RustcDecodable,RustcEncodable,Debug,Clone)]
+pub struct TunnelProxyInfo<P : Peer> {
+  pub next_proxy_peer : Option<<P as Peer>::Address>,
+  pub tunnel_id : usize, // tunnelId change for every hop that is description tci TODO should only be for cached reply info
+  pub error_handle : MultipleReplyInfo<P>, // error handle definition
+}
+
+impl<P : Peer, RI : Info> ExtWrite for TunnelShadowW<P, RI> {
+  #[inline]
+  fn write_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
+
+    // write basic tunnelinfo and content
+    try!(self.shad.write_header(w));
+    let mut inw  = CompExtWInner(w, &mut self.shad);
+
+
+    self.rep.write_in_header(&mut inw);
     Ok(())
   }
   #[inline]
@@ -281,65 +340,13 @@ impl<E : ExtWrite, P : Peer, TW : TunnelWriter<E,P>> ExtWrite for TunnelShadowW<
     // reply or error route TODO having it after had write end is odd (even if at this level we are
     // into another tunnelw shadow), related with read up to reply TODO this might only be ok for
     // error (dif between EI and RI in this case)
-    //
-    match self.replyroute {
-      Some((ref mut limiter ,ref mut rr)) => {
-        {
-          let mut inw  = CompExtWInner(w,limiter);
-          // write header (simkey are include in headers)
-          try!(rr.write_header(&mut inw));
-          // write simkeys to read as dest (Vec<Vec<u8>>)
-          // currently same for error
-          // put simkeys for reply TODO only if reply expected : move to full reply route ReplyInfo
-         // impl -> Reply Info not need to be write into TODO TODO TODO TODO warn simkeys are not
-         // reply info it is part of it (this match is reply info
-      //--    try!(write_simkeys_into(rr.shads , &mut inw));
-
-
-          try!(rr.write_end(&mut inw));
-        }
-        try!(limiter.write_end(w));
-        try!(limiter.flush_into(w));
-      }
-      None => ()
-    }
-
+    // This is simply that we are added to the end but in various layers.
+    // reply or error route TODO having it after had write end is odd (even if at this level we are
+    try!(self.rep.write_after(w));
 
     Ok(())
   }
 }
 
-
-/**
- * write all simkey from its shads as content (when writing reply as replyonce)
- * */
-#[inline]
-pub fn write_simkeys_into<P : Peer, E : ExtWrite, TW : TunnelWriter<E,P>, W : Write>(shads : &mut Shadows<P,E,TW>, w : &mut W) -> Result<()> {
-
-  // not all key must be define
-  let len : usize = shads.0.inner_extwrites().iter().fold(0,|i,item|if item.replykey.is_some() {i+1} else {i});
-  try!(bin_encode(&len, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
-  let mut key = None;
-  // copy/clone each key due to lifetime, this is not optimal
-  for i in 0..len {
-    match shads.0.inner_extwrites().get(i) {
-      Some(ref sh) => match sh.replykey {
-        Some(ref sk) => if key.is_none() {
-          key = Some(sk.clone());
-        } else {
-          key.as_mut().map(|k|k.clone_from(&sk));
-        },
-        None => key = None,
-      },
-      None => key = None,
-    }
-    match key {
-      Some(ref k) => try!(shads.write_all_into(w, &k)),
-      None => (),
-    }
-
-  }
-  Ok(())
-}
 
 

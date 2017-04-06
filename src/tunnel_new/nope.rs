@@ -86,12 +86,11 @@ impl<E : ExtWrite, P : Peer> TunnelWriter<E, P> for Nope {
   #[inline]
   fn write_state<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
   #[inline]
-  fn write_error_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
-  #[inline]
-  fn write_reply_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
-  #[inline]
   fn write_connect_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
-
+  #[inline]
+  fn write_simkeys_into< W : Write>( &mut self, _ : &mut W) -> Result<()> {
+    unimplemented!()
+  }
 
 }
 

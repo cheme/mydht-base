@@ -15,6 +15,7 @@ use readwrite_comp::{
 };
 use super::{
   TunnelWriter,
+  TunnelWriterEW,
   TunnelState,
   TunnelErrorWriter,
   TunnelReplyWriter,
@@ -32,14 +33,21 @@ use bincode::rustc_serialize::{
   decode_from as bin_decode,
 };
 use super::BincErr;
+use super::MultipleReplyMode;
+use super::TunnelCacheManager;
 
 pub struct Full {
+  pub reply_mode : MultipleReplyMode,
+  pub error_mode : MultipleReplyMode,
 }
 /**
  * No impl for instance when no error or no reply
  */
-pub struct FullW {
+pub struct FullW<RI : Info, EI : Info> {
   pub state: TunnelState,
+  pub reply_info : RI,
+  pub error_info : EI,
+  pub current_cache_id: Option<Vec<u8>>,
 }
 
 pub struct FullR {
@@ -48,34 +56,51 @@ pub struct FullR {
 pub struct FullSRW {
 }
 
-impl FullW {
-  pub fn new_rep () -> FullW {
+// TODO move fn to TunnelManager
+impl  Full {
+
+  pub fn new_rep<RI : Info, EI : Info> (&self, ri : RI, ei : EI) -> FullW<RI,EI> {
     FullW {
+      current_cache_id : None,
       state : TunnelState::QueryOnce,
+      reply_info : ri,
+      error_info : ei,
     }
   }
 
 
-  pub fn new_no_rep () -> FullW {
+  pub fn new_no_rep<RI : Info, EI : Info> (&self, ri : RI, ei : EI) -> FullW<RI,EI> {
     FullW {
+      current_cache_id : None,
       state : TunnelState::ReplyOnce,
+      reply_info : ri,
+      error_info : ei,
     }
   }
 
-  pub fn new_with_sym () -> (FullW, FullSRW) {
-    (FullW{
+  pub fn new_with_sym<RI : Info, EI : Info, TC : TunnelCacheManager<FullSRW>> (&self, ri : RI, ei : EI, tc : &mut TC) -> FullW<RI,EI> {
+    let comid = if ri.do_cache() || ei.do_cache() {
+      let fsrw = FullSRW {    };
+      Some(tc.storeW(fsrw))
+    } else {
+      None
+    };
+    FullW{
+      current_cache_id : comid,
       state : TunnelState::QueryCached,
-    },
-    FullSRW {
-    })
+      reply_info : ri,
+      error_info : ei,
+    }
   }
 }
 
 
-impl ExtWrite for FullW {
+/// TODO this impl must move to all TunnelWriter
+impl<E : ExtWrite, P : Peer, RI : Info, EI : Info, TW : TunnelWriter<E, P, RI, EI>> ExtWrite for TunnelWriterEW<E,P,RI,EI,TW> {
   #[inline]
   fn write_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
-    try!(bin_encode(&self.state, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    try!(self.0.write_state(w));
+    try!(self.0.write_connect_info(w));
 
     Ok(())
   }
@@ -124,11 +149,35 @@ impl ExtRead for Full {
 }
 
 
-impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelWriter<E, P, RI, EI> for FullW {
+impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelWriter<E, P, RI, EI> for FullW<RI,EI> {
+  #[inline]
+  fn write_state<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    try!(bin_encode(&self.state, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    Ok(())
+  }
+  #[inline]
+  fn write_error_info<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    try!(bin_encode(&self.error_info, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    Ok(())
+  }
+  #[inline]
+  fn write_reply_info<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    try!(bin_encode(&self.reply_info, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    Ok(())
+  }
+  #[inline]
+  fn write_connect_info<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    if let Some(cci) = self.current_cache_id.as_ref() {
+      try!(bin_encode(cci, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    }
+    Ok(())
+  }
+
+
 }
 
 // impl<E : ExtWrite, P : Peer, RI : Info> TunnelReplyWriter<E, P, RI> for FullSRW {}
 
-impl<E : ExtWrite, P : Peer, EI : Info> TunnelErrorWriter<E, P, EI> for FullW {
+impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelErrorWriter<E, P, EI> for FullW<RI,EI> {
 }
 

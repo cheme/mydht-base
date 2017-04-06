@@ -83,6 +83,16 @@ impl ExtRead for Nope {
 
 
 impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelWriter<E, P, RI, EI> for Nope {
+  #[inline]
+  fn write_state<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
+  #[inline]
+  fn write_error_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
+  #[inline]
+  fn write_reply_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
+  #[inline]
+  fn write_connect_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
+
+
 }
 
 impl<E : ExtWrite, P : Peer, RI : Info> TunnelReplyWriter<E, P, RI> for Nope {

@@ -2,6 +2,7 @@
 use rustc_serialize::{Encodable, Decodable};
 
 use std::fmt;
+use std::marker::PhantomData;
 use rand::thread_rng;
 use rand::Rng;
 use bincode::SizeLimit;
@@ -62,8 +63,11 @@ pub mod nope;
 pub mod full;
 pub mod last;
 
+/// TODO rename to reply info ??
 pub trait Info : Encodable + Decodable + Clone + fmt::Debug {
-//pub trait Info : Encodable + Decodable + fmt::Debug + Clone + Send + Sync + 'static {
+  /// if it retun true, there is a need to cache
+  /// this info for reply or error routing
+  fn do_cache (&self) -> bool;
 }
 
 pub trait Tunnel {
@@ -79,11 +83,13 @@ pub trait Tunnel {
   type P : Peer;
   // reply info info needed to established conn
   type RI : Info;
-  // error info (send to each proxy)
+  // error info info needed to established conn
   type EI : Info;
-  type TW : TunnelWriter<Self::SW, Self::P, Self::RI, Self::EI>;
+  // error info (send to each proxy) type EI : Info; type TW : TunnelWriter<Self::SW, Self::P, Self::RI, Self::EI>;
   type RTW : TunnelReplyWriter<Self::SW, Self::P, Self::RI>;
   type ETW : TunnelErrorWriter<Self::SW, Self::P, Self::EI>;
+  // reader must read all three kind of message
+  type TW : TunnelWriter<Self::SW, Self::P, Self::RI, Self::EI>;
   // reader must read all three kind of message
   type TR : TunnelReader<Self::SR, Self::P, Self::RI>;
 
@@ -100,11 +106,34 @@ pub trait Tunnel {
 }
 
 
-pub trait TunnelWriter<E : ExtWrite, P : Peer, RI : Info, EI : Info> : ExtWrite {
+/// sym writer and sym reader
+pub trait TunnelCacheManager<SW> {
+  fn storeW(&mut self, w : SW) -> Vec<u8>;
+  fn getW(&mut self, &[u8]) -> &mut SW;
+
 }
-pub trait TunnelReplyWriter<E : ExtWrite, P : Peer, I : Info> : ExtWrite {
+pub struct TunnelWriterEW<E : ExtWrite, P : Peer, RI : Info, EI : Info, TW : TunnelWriter<E, P, RI, EI>> (TW, PhantomData<(E,P,RI,EI)>);
+pub trait TunnelWriter<E : ExtWrite, P : Peer, RI : Info, EI : Info> {
+
+  // TODO as writer returning TunnelWriterEW
+  
+  /// write state when state is needed 
+  fn write_state<W : Write>(&mut self, &mut W) -> Result<()>;
+
+  /// write error info
+  fn write_error_info<W : Write>(&mut self, &mut W) -> Result<()>;
+  /// write reply info
+  fn write_reply_info<W : Write>(&mut self, &mut W) -> Result<()>;
+
+  /// write connection info, currently use for caching of previous peer connection id (no encrypt
+  /// on it). This is done at a between peers level (independant to tunnel)
+  fn write_connect_info<W : Write>(&mut self, &mut W) -> Result<()>;
+
 }
-pub trait TunnelErrorWriter<E : ExtWrite, P : Peer, I : Info> : ExtWrite {
+
+pub trait TunnelReplyWriter<E : ExtWrite, P : Peer, I : Info> {//: ExtWrite {
+}
+pub trait TunnelErrorWriter<E : ExtWrite, P : Peer, I : Info> {// : ExtWrite {
 }
 pub trait TunnelReader<E : ExtRead, P : Peer, I> : ExtRead {
 }
@@ -160,3 +189,50 @@ pub enum TunnelState {
 //  Reply(usize), // nb of reply possible TODO for reuse
 }
 
+/// Possible multiple reply handling implementation
+/// Cost of an enum, it is mainly for testing,c
+#[derive(RustcDecodable,RustcEncodable,Debug,Clone,PartialEq,Eq)]
+pub enum MultipleReplyMode {
+  /// do not propagate errors
+  NoHandling,
+  /// send error to peer with designed mode (case where we can know emitter for dest or other error
+  /// handling scheme with possible rendezvous point), TunnelMode is optional and used only for
+  /// case where the reply mode differs from the original tunnelmode TODO remove?? (actually use
+  /// for norep (public) to set origin for dest)
+  KnownDest,
+  /// route for error is included, end of payload should be proxyied.
+  Route,
+  /// if route is cached (info in local cache), report error with same route
+  CachedRoute,
+}
+
+
+/// Error handle info include in frame, also use for reply
+#[derive(RustcDecodable,RustcEncodable,Debug,Clone)]
+pub enum MultipleReplyInfo<P : Peer> {
+  NoHandling,
+  KnownDest(<P as KeyVal>::Key),
+  Route, // route headers are to be read afterward
+  CachedRoute(usize), // usize is error code, and shadow is sim shadow of peer for reply
+}
+
+impl<P : Peer> Info for MultipleReplyInfo<P> {
+  fn do_cache(&self) -> bool {
+    match self {
+      &MultipleReplyInfo::CachedRoute(_) => true,
+      _ => false,
+    }
+  }
+}
+
+impl<P : Peer> MultipleReplyInfo<P> {
+  #[inline]
+  /// get error code return 0 if undefined
+  pub fn get_error_code(&self) -> usize {
+    match self {
+      &MultipleReplyInfo::CachedRoute(ec) => ec,
+      _ => 0,
+    }
+  }
+
+}

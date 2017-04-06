@@ -15,6 +15,7 @@ use readwrite_comp::{
 };
 use super::{
   TunnelWriter,
+  TunnelState,
   TunnelErrorWriter,
   TunnelReplyWriter,
   Info,
@@ -31,6 +32,19 @@ use peer::Peer;
  * No impl for instance when no error or no reply
  */
 pub struct Last ();
+/**
+ * No impl for instance when no error or no reply
+ */
+pub struct LastW {
+  pub state: TunnelState,
+}
+
+pub struct LastR {
+}
+
+pub struct LastSRW {
+}
+
 
 impl ExtWrite for Last {
   #[inline]
@@ -83,6 +97,24 @@ impl ExtRead for Last {
 
 
 impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelWriter<E, P, RI, EI> for Last {
+  #[inline]
+  fn write_state<W : Write>(&mut self, _ : &mut W) -> Result<()> {
+    unimplemented!()
+  }
+  #[inline]
+  fn write_error_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {
+    unimplemented!()
+  }
+  #[inline]
+  fn write_reply_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {
+    unimplemented!()
+  }
+  #[inline]
+  fn write_connect_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {
+    unimplemented!()
+  }
+
+
 }
 
 impl<E : ExtWrite, P : Peer, RI : Info> TunnelReplyWriter<E, P, RI> for Last {

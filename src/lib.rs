@@ -1,5 +1,6 @@
 
 #![feature(associated_consts)]
+#![feature(box_patterns)]
 
 #[macro_use] extern crate log;
 extern crate rustc_serialize;

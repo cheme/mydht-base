@@ -86,12 +86,12 @@ pub trait Tunnel {
   // error info info needed to established conn
   type EI : Info;
   // error info (send to each proxy) type EI : Info; type TW : TunnelWriter<Self::SW, Self::P, Self::RI, Self::EI>;
-  type RTW : TunnelReplyWriter<Self::SW, Self::P, Self::RI>;
-  type ETW : TunnelErrorWriter<Self::SW, Self::P, Self::EI>;
+  type RTW : TunnelReplyWriter<Self::SW, Self::P>;
+  type ETW : TunnelErrorWriter<Self::SW, Self::P>;
   // reader must read all three kind of message
-  type TW : TunnelWriter<Self::SW, Self::P, Self::RI, Self::EI>;
+  type TW : TunnelWriter<Self::SW, Self::P>;
   // reader must read all three kind of message
-  type TR : TunnelReader<Self::SR, Self::P, Self::RI>;
+  type TR : TunnelReader<Self::SR, Self::P>;
 
   fn new_reader (&Self::P) -> Self::TR;
   fn new_writer (&Self::P) -> Self::TW;
@@ -112,10 +112,10 @@ pub trait TunnelCacheManager<SW> {
   fn getW(&mut self, &[u8]) -> &mut SW;
 
 }
-pub struct TunnelWriterEW<E : ExtWrite, P : Peer, RI : Info, EI : Info, TW : TunnelWriter<E, P, RI, EI>> (TW, PhantomData<(E,P,RI,EI)>);
-pub trait TunnelWriter<E : ExtWrite, P : Peer, RI : Info, EI : Info> {
+pub struct TunnelWriterExt<E : ExtWrite, P : Peer, TW : TunnelWriter<E, P>> (TW, PhantomData<(E,P)>);
+pub trait TunnelWriter<E : ExtWrite, P : Peer> {
 
-  // TODO as writer returning TunnelWriterEW
+  // TODO as writer returning TunnelWriterExt
   
   /// write state when state is needed 
   fn write_state<W : Write>(&mut self, &mut W) -> Result<()>;
@@ -131,11 +131,11 @@ pub trait TunnelWriter<E : ExtWrite, P : Peer, RI : Info, EI : Info> {
 
 }
 
-pub trait TunnelReplyWriter<E : ExtWrite, P : Peer, I : Info> {//: ExtWrite {
+pub trait TunnelReplyWriter<E : ExtWrite, P : Peer> {//: ExtWrite {
 }
-pub trait TunnelErrorWriter<E : ExtWrite, P : Peer, I : Info> {// : ExtWrite {
+pub trait TunnelErrorWriter<E : ExtWrite, P : Peer> {// : ExtWrite {
 }
-pub trait TunnelReader<E : ExtRead, P : Peer, I> : ExtRead {
+pub trait TunnelReader<E : ExtRead, P : Peer> : ExtRead {
 }
 
 pub type TunnelWriterComp<

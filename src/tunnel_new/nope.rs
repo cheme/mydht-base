@@ -82,7 +82,7 @@ impl ExtRead for Nope {
 }
 
 
-impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelWriter<E, P, RI, EI> for Nope {
+impl<E : ExtWrite, P : Peer> TunnelWriter<E, P> for Nope {
   #[inline]
   fn write_state<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
   #[inline]
@@ -95,9 +95,9 @@ impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelWriter<E, P, RI, EI> fo
 
 }
 
-impl<E : ExtWrite, P : Peer, RI : Info> TunnelReplyWriter<E, P, RI> for Nope {
+impl<E : ExtWrite, P : Peer> TunnelReplyWriter<E, P> for Nope {
 }
 
-impl<E : ExtWrite, P : Peer, EI : Info> TunnelErrorWriter<E, P, EI> for Nope {
+impl<E : ExtWrite, P : Peer> TunnelErrorWriter<E, P> for Nope {
 }
 

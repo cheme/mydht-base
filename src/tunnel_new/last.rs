@@ -96,7 +96,7 @@ impl ExtRead for Last {
 }
 
 
-impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelWriter<E, P, RI, EI> for Last {
+impl<E : ExtWrite, P : Peer> TunnelWriter<E, P> for Last {
   #[inline]
   fn write_state<W : Write>(&mut self, _ : &mut W) -> Result<()> {
     unimplemented!()
@@ -117,9 +117,9 @@ impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelWriter<E, P, RI, EI> fo
 
 }
 
-impl<E : ExtWrite, P : Peer, RI : Info> TunnelReplyWriter<E, P, RI> for Last {
+impl<E : ExtWrite, P : Peer> TunnelReplyWriter<E, P> for Last {
 }
 
-impl<E : ExtWrite, P : Peer, EI : Info> TunnelErrorWriter<E, P, EI> for Last {
+impl<E : ExtWrite, P : Peer> TunnelErrorWriter<E, P> for Last {
 }
 

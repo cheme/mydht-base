@@ -15,8 +15,7 @@ use readwrite_comp::{
 };
 use super::{
   TunnelWriter,
-  TunnelErrorWriter,
-  TunnelReplyWriter,
+  TunnelReader,
   Info,
 };
 use std::io::{
@@ -32,6 +31,26 @@ use peer::Peer;
  */
 pub struct Nope ();
 
+
+impl Info for Nope {
+  #[inline]
+  fn do_cache (&self) -> bool {
+    false
+  }
+  #[inline]
+  fn write_in_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    Ok(())
+  }
+  #[inline]
+  fn write_after<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    Ok(())
+  }
+  #[inline]
+  fn get_reply_key(&self) -> Option<&Vec<u8>> {
+    None
+  }
+
+}
 impl ExtWrite for Nope {
   #[inline]
   fn write_header<W : Write>(&mut self, _ : &mut W) -> Result<()> {
@@ -82,7 +101,7 @@ impl ExtRead for Nope {
 }
 
 
-impl<E : ExtWrite, P : Peer> TunnelWriter<E, P> for Nope {
+impl TunnelWriter for Nope {
   #[inline]
   fn write_state<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
   #[inline]
@@ -94,9 +113,6 @@ impl<E : ExtWrite, P : Peer> TunnelWriter<E, P> for Nope {
 
 }
 
-impl<E : ExtWrite, P : Peer> TunnelReplyWriter<E, P> for Nope {
-}
-
-impl<E : ExtWrite, P : Peer> TunnelErrorWriter<E, P> for Nope {
+impl TunnelReader for Nope {
 }
 

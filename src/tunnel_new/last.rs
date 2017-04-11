@@ -16,8 +16,6 @@ use readwrite_comp::{
 use super::{
   TunnelWriter,
   TunnelState,
-  TunnelErrorWriter,
-  TunnelReplyWriter,
   Info,
 };
 use std::io::{
@@ -96,7 +94,7 @@ impl ExtRead for Last {
 }
 
 
-impl<E : ExtWrite, P : Peer> TunnelWriter<E, P> for Last {
+impl TunnelWriter for Last {
   #[inline]
   fn write_state<W : Write>(&mut self, _ : &mut W) -> Result<()> {
     unimplemented!()
@@ -112,9 +110,5 @@ impl<E : ExtWrite, P : Peer> TunnelWriter<E, P> for Last {
 
 }
 
-impl<E : ExtWrite, P : Peer> TunnelReplyWriter<E, P> for Last {
-}
 
-impl<E : ExtWrite, P : Peer> TunnelErrorWriter<E, P> for Last {
-}
 

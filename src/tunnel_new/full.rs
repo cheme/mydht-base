@@ -15,10 +15,7 @@ use readwrite_comp::{
 };
 use super::{
   TunnelWriter,
-  TunnelWriterExt,
   TunnelState,
-  TunnelErrorWriter,
-  TunnelReplyWriter,
   Info,
 };
 use std::io::{
@@ -33,19 +30,31 @@ use bincode::rustc_serialize::{
   decode_from as bin_decode,
 };
 use super::BincErr;
+use super::TunnelNoRep;
 use super::MultipleReplyMode;
-use super::TunnelCacheManager;
+use super::TunnelManager;
 use super::MultipleReplyInfo;
+use super::nope::Nope;
+use std::marker::PhantomData;
 
-pub struct Full {
+/// Reply and Error info for full are currently hardcoded MultipleReplyInfo
+/// This is not the cas for FullW or FullR, that way only Full need to be reimplemented to use less 
+/// generic mode TODO make it generic ? (associated InfoMode type and info constructor)
+pub struct Full<P : Peer, E : ExtWrite> {
+  pub me : P,
   pub reply_mode : MultipleReplyMode,
   pub error_mode : MultipleReplyMode,
+  pub _p : PhantomData<(P,E)>,
 }
 
 type Shadows<P : Peer, E : ExtWrite, RI : Info> = CompExtW<MultiWExt<TunnelShadowW<P,RI>>,E>;
 
 /**
  * No impl for instance when no error or no reply
+ *
+ *
+ * Full writer : use for all write and reply, could be split but for now I use old code.
+ *
  */
 pub struct FullW<RI : Info, EI : Info, P : Peer, E : ExtWrite > {
   state: TunnelState,
@@ -60,11 +69,50 @@ pub struct FullR {
 pub struct FullSRW {
 }
 
-// TODO move fn to TunnelManager
-impl Full {
+//impl TunnelNoRep for Full {
 
-  pub fn new_rep
-    <RI : Info, EI : Info, P : Peer, E : ExtWrite> 
+impl<P : Peer, E : ExtWrite> TunnelNoRep for Full<P,E> {
+  type P = P;
+  type TW = FullW<MultipleReplyInfo<P>, MultipleReplyInfo<P>, P, E>;
+  type TR = Nope; // TODO
+
+  fn new_reader_no_reply (&mut self, _ : &Self::P) -> Self::TR {
+    Nope()
+  }
+  fn new_writer_no_reply (&mut self, p : &Self::P) -> Self::TW {
+    let shads = self.next_shads(p);
+    let error_info = self.new_error_info();
+    FullW {
+      current_cache_id : None,
+      state : TunnelState::ReplyOnce,
+      error_info : error_info,
+      shads: shads,
+    }
+  }
+
+}
+
+// TODO move fn to TunnelManager
+// This should be split for reuse in last or others (base fn todo)
+impl<P : Peer, E : ExtWrite> Full<P,E> {
+
+  fn new_error_info (&mut self) -> MultipleReplyInfo<P> {
+    match self.error_mode {
+      MultipleReplyMode::NoHandling => MultipleReplyInfo::NoHandling,
+      MultipleReplyMode::KnownDest => MultipleReplyInfo::KnownDest(self.me.get_key()),
+      MultipleReplyMode::Route => MultipleReplyInfo::Route,
+      MultipleReplyMode::CachedRoute=> MultipleReplyInfo::CachedRoute(self.new_error_code()),
+    }
+  }
+  fn new_error_code (&mut self) -> usize {
+    unimplemented!()
+  }
+  fn next_shads<RI : Info> (&mut self, p : &P) -> Shadows<P,E,RI> {
+    unimplemented!()
+  }
+
+  fn new_rep
+    <RI : Info, EI : Info> 
     (&self, ri : RI, ei : EI, shads: Shadows<P,E,RI>) -> FullW<RI,EI,P,E> {
     FullW {
       current_cache_id : None,
@@ -75,8 +123,8 @@ impl Full {
   }
 
 
-  pub fn new_no_rep
-    <RI : Info, EI : Info, P : Peer, E : ExtWrite> 
+  fn new_no_rep
+    <RI : Info, EI : Info> 
     (&self, ri : RI, ei : EI, shads: Shadows<P,E,RI>) -> FullW<RI,EI,P,E> {
     FullW {
       current_cache_id : None,
@@ -85,9 +133,9 @@ impl Full {
       shads: shads,
     }
   }
-
-  pub fn new_with_sym
-    <RI : Info, EI : Info, P : Peer, E : ExtWrite, TC : TunnelCacheManager<FullSRW>> 
+/*
+  fn new_with_sym
+    <RI : Info, EI : Info, P : Peer, E : ExtWrite, TC : TunnelManager<FullSRW>> 
     (&self, ri : RI, ei : EI, shads: Shadows<P,E,RI>, tc : &mut TC) -> FullW<RI,EI,P,E> {
     let comid = if ri.do_cache() || ei.do_cache() {
       let fsrw = FullSRW {    };
@@ -101,12 +149,16 @@ impl Full {
       error_info : ei,
       shads: shads,
     }
-  }
+  }*/
 }
 
+/// Wrapper over TunnelWriter to aleviate trait usage restrictions, WriterExt is therefore to be
+/// implemented on this (see full.rs)
+/// This could be removed after specialization
+pub struct TunnelWriterFull<TW : TunnelWriter> (TW);
 
 /// TODO this impl must move to all TunnelWriter
-impl<E : ExtWrite, P : Peer, TW : TunnelWriter<E, P>> ExtWrite for TunnelWriterExt<E,P,TW> {
+impl<TW : TunnelWriter> ExtWrite for TunnelWriterFull<TW> {
   #[inline]
   fn write_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
     try!(self.0.write_state(w));
@@ -150,7 +202,8 @@ impl<E : ExtWrite, P : Peer, TW : TunnelWriter<E, P>> ExtWrite for TunnelWriterE
   }
 }
 
-impl ExtRead for Full {
+struct TunnelReaderFull;
+impl ExtRead for TunnelReaderFull {
   #[inline]
   fn read_header<R : Read>(&mut self, _ : &mut R) -> Result<()> {
     Ok(())
@@ -171,7 +224,7 @@ impl ExtRead for Full {
 }
 
 
-impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelWriter<E, P> for FullW<RI,EI,P,E> {
+impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelWriter for FullW<RI,EI,P,E> {
   #[inline]
   fn write_state<W : Write>(&mut self, w : &mut W) -> Result<()> {
     try!(bin_encode(&self.state, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
@@ -215,12 +268,6 @@ impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelWriter<E, P> for FullW<
 }
 }
 
-// impl<E : ExtWrite, P : Peer, RI : Info> TunnelReplyWriter<E, P, RI> for FullSRW {}
-
-impl<E : ExtWrite, P : Peer, RI : Info, EI : Info> TunnelErrorWriter<E, P> for FullW<RI,EI,P,E> {
-}
-
-
 
 
 //////-------------
@@ -237,16 +284,16 @@ pub struct TunnelShadowW<P : Peer, RI : Info> {
 /// TODO implement Info
 /// TODO next split it (here it is MultiReply whichi is previous enum impl, purpose of refacto is
 /// getting rid of those enum (only if needed)
-pub struct ReplyInfo<E : ExtWrite, P : Peer,TW : TunnelWriter<E,P>> {
+pub struct ReplyInfo<E : ExtWrite, P : Peer,TW : TunnelWriter> {
   info : TunnelProxyInfo<P>,
   // this should be seen as a way to establish connection so for new rep, replykey 
   replykey : Option<Vec<u8>>, 
   // reply route should be seen as a reply info : used to write the payload -> TODO redesign this
-  replyroute : Option<(E,Box<TunnelWriterExt<E,P,TW>>)>,
-  //replyroute : Option<Box<(E,TunnelWriterExt<E,P,TW>)>>,
+  replyroute : Option<(E,Box<TunnelWriterFull<TW>>)>,
+  //replyroute : Option<Box<(E,TunnelWriterFull<E,P,TW>)>>,
 }
 
-impl<E : ExtWrite, P : Peer,TW : TunnelWriter<E,P>> Info for ReplyInfo<E,P,TW> {
+impl<E : ExtWrite, P : Peer,TW : TunnelWriter> Info for ReplyInfo<E,P,TW> {
   
   fn do_cache (&self) -> bool {
     self.replykey.is_some()
@@ -303,7 +350,7 @@ impl<E : ExtWrite, P : Peer,TW : TunnelWriter<E,P>> Info for ReplyInfo<E,P,TW> {
   }
 }
 
-//pub struct TunnelShadowW<E : ExtWrite, P : Peer> (pub <P as Peer>::Shadow, pub TunnelProxyInfo<P>, pub Option<Vec<u8>>, Option<(E,Box<TunnelWriterExt<E,P>>)>);
+//pub struct TunnelShadowW<E : ExtWrite, P : Peer> (pub <P as Peer>::Shadow, pub TunnelProxyInfo<P>, pub Option<Vec<u8>>, Option<(E,Box<TunnelWriterFull<E,P>>)>);
 
 /// Tunnel proxy info : tunnel info accessible for any peer, the serializable/deser (and pretty
 /// common part) of reply info

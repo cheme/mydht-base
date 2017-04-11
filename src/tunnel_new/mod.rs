@@ -59,6 +59,7 @@ use bincode::rustc_serialize::EncodingError as BincError;
 use bincode::rustc_serialize::DecodingError as BindError;
 
 
+pub mod default;
 pub mod nope;
 pub mod full;
 pub mod last;
@@ -74,53 +75,62 @@ pub trait Info {
   fn write_after<W : Write>(&mut self, w : &mut W) -> Result<()>;
   fn get_reply_key(&self) -> Option<&Vec<u8>>;
 }
-
-pub trait Tunnel {
+/// Tunnel trait could be in a single tunnel impl, but we use multiple to separate concerns a bit
+pub trait TunnelNoRep {
   // shadow asym key reader
-  type SR : ExtRead;
+//  type SR : ExtRead;
   // shadow asym key writer 
-  type SW : ExtWrite;
+//  type SW : ExtWrite;
+  // peer type
+  type P : Peer;
+  // reader must read all three kind of message
+  type TW : TunnelWriter;
+  // reader must read all three kind of message
+  type TR : TunnelReader;
+
+  fn new_reader_no_reply (&mut self, &Self::P) -> Self::TR;
+  fn new_writer_no_reply (&mut self, &Self::P) -> Self::TW;
+
+}
+/// tunnel with reply
+pub trait Tunnel : TunnelNoRep {
+  // reply info info needed to established conn
+  type RI : Info;
+  type RTW : TunnelWriter;
+  fn new_writer (&Self::P) -> Self::TW;
+  fn new_reply_writer (&Self::P, &Self::RI) -> Self::RTW;
+}
+/// tunnel with reply
+pub trait TunnelError : TunnelNoRep {
+  // error info info needed to established conn
+  type EI : Info;
+  type ETW : TunnelWriter;
+  fn new_error_writer (&Self::P, &Self::EI) -> Self::ETW;
+}
+
+/// Tunnel which allow caching, and thus establishing connections
+pub trait TunnelManager : Tunnel {
   // Shadow Sym (if established con)
   type SSW : ExtWrite;
   // Shadow Sym (if established con)
   type SSR : ExtWrite;
-  // peer type
-  type P : Peer;
-  // reply info info needed to established conn
-  type RI : Info;
-  // error info info needed to established conn
-  type EI : Info;
-  // error info (send to each proxy) type EI : Info; type TW : TunnelWriter<Self::SW, Self::P, Self::RI, Self::EI>;
-  type RTW : TunnelReplyWriter<Self::SW, Self::P>;
-  type ETW : TunnelErrorWriter<Self::SW, Self::P>;
-  // reader must read all three kind of message
-  type TW : TunnelWriter<Self::SW, Self::P>;
-  // reader must read all three kind of message
-  type TR : TunnelReader<Self::SR, Self::P>;
 
-  fn new_reader (&Self::P) -> Self::TR;
-  fn new_writer (&Self::P) -> Self::TW;
-  fn new_sym_writer (&Self::P) -> (Self::SSW,Self::RI);
-  fn new_sym_reader (&Self::RI) -> Self::SSR;
-  fn new_reply_writer (&Self::P, &Self::RI) -> Self::RTW;
-  fn new_error_writer (&Self::P, &Self::EI) -> Self::ETW;
 
+  fn put(&mut self, Self::SSW) -> Vec<u8>;
+  fn get(&mut self, &[u8]) -> &mut Self::SSW;
   // uncomplete : idea is get from cache (maybe implement directly in trait : very likely)
   fn get_sym_reader (&[u8]) -> &mut Self::SSR;
   fn use_sym_exchange (&Self::RI) -> bool;
-}
 
+  fn new_sym_writer (&Self::P) -> (Self::SSW,Self::RI);
 
-/// sym writer and sym reader
-pub trait TunnelCacheManager<SW> {
-  fn storeW(&mut self, w : SW) -> Vec<u8>;
-  fn getW(&mut self, &[u8]) -> &mut SW;
+  fn new_sym_reader (&Self::RI) -> Self::SSR;
 
 }
-pub struct TunnelWriterExt<E : ExtWrite, P : Peer, TW : TunnelWriter<E, P>> (TW, PhantomData<(E,P)>);
-pub trait TunnelWriter<E : ExtWrite, P : Peer> {
 
-  // TODO as writer returning TunnelWriterExt
+
+pub trait TunnelWriter {
+
   
   /// write state when state is needed 
   fn write_state<W : Write>(&mut self, &mut W) -> Result<()>;
@@ -136,11 +146,7 @@ pub trait TunnelWriter<E : ExtWrite, P : Peer> {
 
 }
 
-pub trait TunnelReplyWriter<E : ExtWrite, P : Peer> {//: ExtWrite {
-}
-pub trait TunnelErrorWriter<E : ExtWrite, P : Peer> {// : ExtWrite {
-}
-pub trait TunnelReader<E : ExtRead, P : Peer> : ExtRead {
+pub trait TunnelReader {
 }
 
 pub type TunnelWriterComp<

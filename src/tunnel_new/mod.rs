@@ -70,9 +70,11 @@ pub trait Info {
   /// this info for reply or error routing
   fn do_cache (&self) -> bool;
 
-
   fn write_in_header<W : Write>(&mut self, w : &mut W) -> Result<()>;
   fn write_after<W : Write>(&mut self, w : &mut W) -> Result<()>;
+}
+
+pub trait RepInfo : Info {
   fn get_reply_key(&self) -> Option<&Vec<u8>>;
 }
 /// Tunnel trait could be in a single tunnel impl, but we use multiple to separate concerns a bit
@@ -88,49 +90,69 @@ pub trait TunnelNoRep {
   // reader must read all three kind of message
   type TR : TunnelReader;
 
+  /// could return a writer allowing reply but not mandatory
+  /// same for sym info
   fn new_reader_no_reply (&mut self, &Self::P) -> Self::TR;
+  /// could return a writer allowing reply but not mandatory
+  /// same for sym info
   fn new_writer_no_reply (&mut self, &Self::P) -> Self::TW;
 
 }
+
 /// tunnel with reply
 pub trait Tunnel : TunnelNoRep {
   // reply info info needed to established conn
   type RI : Info;
   type RTW : TunnelWriter;
-  fn new_writer (&Self::P) -> Self::TW;
-  fn new_reply_writer (&Self::P, &Self::RI) -> Self::RTW;
+  fn new_writer (&mut self, &Self::P) -> Self::TW;
+  fn new_reply_writer (&mut self, &Self::P, &Self::RI) -> Self::RTW;
 }
+
 /// tunnel with reply
 pub trait TunnelError : TunnelNoRep {
   // error info info needed to established conn
   type EI : Info;
+  /// TODO not a 
   type ETW : TunnelWriter;
-  fn new_error_writer (&Self::P, &Self::EI) -> Self::ETW;
+
+  fn new_error_writer (&mut self, &Self::P, &Self::EI) -> Self::ETW;
+
 }
 
 /// Tunnel which allow caching, and thus establishing connections
-pub trait TunnelManager : Tunnel {
+pub trait TunnelManager : Tunnel where Self::RI : RepInfo {
   // Shadow Sym (if established con)
   type SSW : ExtWrite;
   // Shadow Sym (if established con)
-  type SSR : ExtWrite;
+  type SSR : ExtRead;
 
+  fn put_symw(&mut self, Self::SSW) -> Result<Vec<u8>>;
 
-  fn put(&mut self, Self::SSW) -> Vec<u8>;
-  fn get(&mut self, &[u8]) -> &mut Self::SSW;
-  // uncomplete : idea is get from cache (maybe implement directly in trait : very likely)
-  fn get_sym_reader (&[u8]) -> &mut Self::SSR;
+  fn get_symw(&mut self, &[u8]) -> Result<&mut Self::SSW>;
+
+  fn put_symr(&mut self, Self::SSR) -> Result<Vec<u8>>;
+
+  fn get_symr(&mut self, &[u8]) -> Result<&mut Self::SSR>;
+
   fn use_sym_exchange (&Self::RI) -> bool;
 
-  fn new_sym_writer (&Self::P) -> (Self::SSW,Self::RI);
+  fn new_sym_writer (&mut self, Vec<u8>) -> Self::SSW;
 
-  fn new_sym_reader (&Self::RI) -> Self::SSR;
+  fn new_sym_reader (&mut self, Vec<u8>) -> Self::SSR;
+
+  fn new_cache_id (&mut self) -> Vec<u8>;
+}
+
+/// Error is for non reply non cache message with only a usize info.
+/// Otherwhise Reply mechanism should be use for ack or error
+pub trait TunnelErrorWriter {
+
+  fn write_error<W : Write>(&mut self, &mut W, usize) -> Result<()>;
 
 }
 
-
+/// TODO some fn might be useless : check it later
 pub trait TunnelWriter {
-
   
   /// write state when state is needed 
   fn write_state<W : Write>(&mut self, &mut W) -> Result<()>;
@@ -138,12 +160,26 @@ pub trait TunnelWriter {
   /// write connection info, currently use for caching of previous peer connection id (no encrypt
   /// on it). This is done at a between peers level (independant to tunnel)
   fn write_connect_info<W : Write>(&mut self, &mut W) -> Result<()>;
-/**
- * write all simkey from its shads as content (when writing reply as replyonce)
- * */
- fn write_simkeys_into< W : Write>( &mut self, &mut W) -> Result<()>; 
+
+  /// write all simkey from its shads as content (when writing reply as replyonce)
+  fn write_simkeys_into< W : Write>( &mut self, &mut W) -> Result<()>; 
+
+  /// write headers (probably layered one) 
+  fn write_tunnel_header<W : Write>(&mut self, w : &mut W) -> Result<()>;
 
 
+  /// ExtWrite write into
+  fn write_tunnel_into<W : Write>(&mut self, &mut W, &[u8]) -> Result<usize>;
+
+  /// ExtWrite write all into
+  fn write_tunnel_all_into<W : Write>(&mut self, &mut W, &[u8]) -> Result<()>;
+
+  /// ExtWrite flush into
+  fn flush_tunnel_into<W : Write>(&mut self, _ : &mut W) -> Result<()>;
+
+  /// ExtWrite write end
+  fn write_tunnel_end<W : Write>(&mut self, w : &mut W) -> Result<()>;
+ 
 }
 
 pub trait TunnelReader {
@@ -199,7 +235,16 @@ pub enum TunnelState {
 //  Query(usize), // nb of query possible TODO for reuse 
 //  Reply(usize), // nb of reply possible TODO for reuse
 }
-
+impl TunnelState {
+  pub fn do_cache(&self) -> bool {
+    match self {
+      &TunnelState::QueryCached 
+      | &TunnelState ::ReplyCached 
+      | &TunnelState::QErrorCached => true,
+      _ => false,
+    }
+  }
+}
 /// Possible multiple reply handling implementation
 /// Cost of an enum, it is mainly for testing,c
 #[derive(RustcDecodable,RustcEncodable,Debug,Clone,PartialEq,Eq)]
@@ -217,8 +262,9 @@ pub enum MultipleReplyMode {
   CachedRoute,
 }
 
-
 /// Error handle info include in frame, also use for reply
+/// TODO split as ReplyInfo is split
+/// TODO generic not in tunnel
 #[derive(RustcDecodable,RustcEncodable,Debug,Clone)]
 pub enum MultipleReplyInfo<P : Peer> {
   NoHandling,
@@ -227,9 +273,15 @@ pub enum MultipleReplyInfo<P : Peer> {
   CachedRoute(usize), // usize is error code, and shadow is sim shadow of peer for reply
 }
 
-impl<P : Peer> Info for MultipleReplyInfo<P> {
-  fn get_reply_key(&self) -> Option<&Vec<u8>> {
-    return None;
+
+impl<P : Peer> MultipleReplyInfo<P> {
+  #[inline]
+  /// get error code return 0 if undefined
+  pub fn get_error_code(&self) -> usize {
+    match self {
+      &MultipleReplyInfo::CachedRoute(ec) => ec,
+      _ => 0,
+    }
   }
   fn do_cache(&self) -> bool {
     match self {
@@ -246,16 +298,33 @@ impl<P : Peer> Info for MultipleReplyInfo<P> {
     Ok(())
   }
 
+
 }
 
-impl<P : Peer> MultipleReplyInfo<P> {
-  #[inline]
-  /// get error code return 0 if undefined
-  pub fn get_error_code(&self) -> usize {
-    match self {
-      &MultipleReplyInfo::CachedRoute(ec) => ec,
-      _ => 0,
-    }
+/// Cache for tunnel : mydht cache is not use directly to allow external library, but it a mydht
+/// cache can implement it very straight forwardly (trait is minimal here) except for creating a
+/// key
+/// IOresult is used but only for the sake of lazyness (TODO)
+pub trait TunnelCache<SSW,SSR> {
+  fn put_symw_tunnel(&mut self, SSW) -> Result<Vec<u8>>;
+  fn get_symw_tunnel(&self, &[u8]) -> Result<&mut SSW>;
+  fn has_symw_tunnel(&self, k : &[u8]) -> bool {
+    self.get_symw_tunnel(k).is_ok()
   }
 
+  fn put_symr_tunnel(&mut self, SSR) -> Result<Vec<u8>>;
+  fn get_symr_tunnel(&self, &[u8]) -> Result<&mut SSR>;
+  fn has_symr_tunnel(&self, k : &[u8]) -> bool {
+    self.get_symr_tunnel(k).is_ok()
+  }
+  fn new_cache_id (&mut self) -> Vec<u8>;
+
+}
+
+
+/// TODO move with generic traits from full (should not be tunnel main module component
+pub trait SymProvider<SSW,SSR> {
+  fn new_sym_writer (&mut self, Vec<u8>) -> SSW;
+
+  fn new_sym_reader (&mut self, Vec<u8>) -> SSR;
 }

@@ -15,8 +15,12 @@ use readwrite_comp::{
 };
 use super::{
   TunnelWriter,
+  TunnelCache,
+  TunnelErrorWriter,
   TunnelReader,
   Info,
+  RepInfo,
+  SymProvider,
 };
 use std::io::{
   Write,
@@ -45,12 +49,14 @@ impl Info for Nope {
   fn write_after<W : Write>(&mut self, w : &mut W) -> Result<()> {
     Ok(())
   }
+}
+impl RepInfo for Nope {
   #[inline]
   fn get_reply_key(&self) -> Option<&Vec<u8>> {
     None
   }
-
 }
+
 impl ExtWrite for Nope {
   #[inline]
   fn write_header<W : Write>(&mut self, _ : &mut W) -> Result<()> {
@@ -107,12 +113,67 @@ impl TunnelWriter for Nope {
   #[inline]
   fn write_connect_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
   #[inline]
+  fn write_tunnel_header<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
+  #[inline]
   fn write_simkeys_into< W : Write>( &mut self, _ : &mut W) -> Result<()> {
     unimplemented!()
   }
+  #[inline]
+  fn write_tunnel_into<W : Write>(&mut self, w : &mut W, cont : &[u8]) -> Result<usize> {Ok(cont.len())}
+  #[inline]
+  fn write_tunnel_all_into<W : Write>(&mut self, w : &mut W, cont : &[u8]) -> Result<()> {Ok(())}
+  #[inline]
+  fn flush_tunnel_into<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
+  #[inline]
+  fn write_tunnel_end<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
 
 }
 
+impl TunnelErrorWriter for Nope {
+  fn write_error<W : Write>(&mut self, _ : &mut W, _ : usize) -> Result<()> {
+    Ok(())
+  }
+}
 impl TunnelReader for Nope {
 }
 
+impl<SSW,SSR> TunnelCache<SSW,SSR> for Nope {
+  fn put_symw_tunnel(&mut self, _ : SSW) -> Result<Vec<u8>> {
+    // TODO replace with actual erro
+    unimplemented!()
+  }
+  fn get_symw_tunnel(&self, _ : &[u8]) -> Result<&mut SSW> {
+    // TODO replace with actual erro
+    unimplemented!()
+  }
+  fn has_symw_tunnel(&self, _ : &[u8]) -> bool {
+    false
+  }
+
+  fn put_symr_tunnel(&mut self, _ : SSR) -> Result<Vec<u8>> {
+    // TODO replace with actual erro
+    unimplemented!()
+  }
+  fn get_symr_tunnel(&self, _ : &[u8]) -> Result<&mut SSR> {
+    // TODO replace with actual erro
+    unimplemented!()
+  }
+  fn has_symr_tunnel(&self, _ : &[u8]) -> bool {
+    false
+  }
+  fn new_cache_id (&mut self) -> Vec<u8> {
+    vec![]
+  }
+}
+
+// TODO remove as only for dev progress
+impl<SSW,SSR> SymProvider<SSW,SSR> for Nope {
+
+  fn new_sym_writer (&mut self, _ : Vec<u8>) -> SSW {
+    panic!("Should only be use for dev");
+  }
+  fn new_sym_reader (&mut self, _ : Vec<u8>) -> SSR {
+    panic!("Should only be use for dev");
+  }
+
+}

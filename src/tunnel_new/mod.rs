@@ -59,13 +59,17 @@ use bincode::rustc_serialize::EncodingError as BincError;
 use bincode::rustc_serialize::DecodingError as BindError;
 
 
+pub mod info;
 pub mod default;
 pub mod nope;
+pub mod common;
 pub mod full;
 pub mod last;
 
 /// TODO rename to reply info ??
 pub trait Info {
+//  type Base;
+//  fn new (Self::Base) -> Self;
   /// if it retun true, there is a need to cache
   /// this info for reply or error routing
   fn do_cache (&self) -> bool;
@@ -77,6 +81,26 @@ pub trait Info {
 pub trait RepInfo : Info {
   fn get_reply_key(&self) -> Option<&Vec<u8>>;
 }
+
+/// Route Provider
+/// P peer for route
+/// EI error info
+/// RI reply info
+pub trait RouteProvider<P : Peer> {
+  /// only dest is used to create new route TODO new scheme letter with multi dest 
+  fn new_route (&mut self, &P) -> Vec<&P>;
+  /// for bitunnel (arg is still dest our peer addressi is known to route provider) 
+  fn new_reply_route (&mut self, &P) -> Vec<&P>;
+}
+pub trait ErrorProvider<P : Peer, EI : Info> {
+  /// Error infos bases for peers
+  fn new_error_route (&mut self, &[&P]) -> Vec<EI>;
+}
+pub trait ReplyProvider<P : Peer, RI : RepInfo> {
+  /// Error infos bases for peers
+  fn new_reply (&mut self, &[&P]) -> RI;
+}
+
 /// Tunnel trait could be in a single tunnel impl, but we use multiple to separate concerns a bit
 pub trait TunnelNoRep {
   // shadow asym key reader
@@ -96,6 +120,8 @@ pub trait TunnelNoRep {
   /// could return a writer allowing reply but not mandatory
   /// same for sym info
   fn new_writer_no_reply (&mut self, &Self::P) -> Self::TW;
+
+  fn new_writer_no_reply_with_route (&mut self, &[&Self::P]) -> Self::TW;
 
 }
 
@@ -142,7 +168,7 @@ pub trait TunnelManager : Tunnel where Self::RI : RepInfo {
 
   fn new_cache_id (&mut self) -> Vec<u8>;
 }
-
+ 
 /// Error is for non reply non cache message with only a usize info.
 /// Otherwhise Reply mechanism should be use for ack or error
 pub trait TunnelErrorWriter {
@@ -184,7 +210,7 @@ pub trait TunnelWriter {
 
 pub trait TunnelReader {
 }
-
+/* ??? useless???
 pub type TunnelWriterComp<
   'a, 
   'b, 
@@ -196,7 +222,7 @@ pub type TunnelWriterComp<
   //TW : TunnelWriter<E,P,RI,EI> + 'b> 
   TW : ExtWrite + 'b> 
   = CompW<'a,'b,W,TW>;
-
+*/
 pub struct BincErr(BincError);
 impl From<BincErr> for IoError {
   #[inline]
@@ -211,96 +237,6 @@ impl From<BindErr> for IoError {
     IoError::new(IoErrorKind::Other, e.0)
   }
 }
-
-/**
- * Query expect reply, reply does not (reply can reply to reply)
- */
-#[derive(RustcDecodable,RustcEncodable,Debug,Clone,PartialEq,Eq)]
-pub enum TunnelState {
-  /// NoTunnel, same as TunnelMode::NoTunnel (TODO remove TunnelMode::NoTunnel when stable)
-  TunnelState,
-  /// query with all info to establish route (and reply)
-  QueryOnce,
-  /// info are cached
-  QueryCached,
-  /// Reply with no additional info for reuse, can be use directly (not cached)
-  ReplyOnce,
-  /// info are cached, can be use by emitter after QueryCached
-  ReplyCached,
-  /// Error are only for query, as error for reply could not be emit again (dest do not know origin
-  /// of query (otherwhise use NoRepTunnel and only send Query).
-  QError,
-  /// same as QError but no route just tcid, and error is send as xor of previous with ours.
-  QErrorCached,
-//  Query(usize), // nb of query possible TODO for reuse 
-//  Reply(usize), // nb of reply possible TODO for reuse
-}
-impl TunnelState {
-  pub fn do_cache(&self) -> bool {
-    match self {
-      &TunnelState::QueryCached 
-      | &TunnelState ::ReplyCached 
-      | &TunnelState::QErrorCached => true,
-      _ => false,
-    }
-  }
-}
-/// Possible multiple reply handling implementation
-/// Cost of an enum, it is mainly for testing,c
-#[derive(RustcDecodable,RustcEncodable,Debug,Clone,PartialEq,Eq)]
-pub enum MultipleReplyMode {
-  /// do not propagate errors
-  NoHandling,
-  /// send error to peer with designed mode (case where we can know emitter for dest or other error
-  /// handling scheme with possible rendezvous point), TunnelMode is optional and used only for
-  /// case where the reply mode differs from the original tunnelmode TODO remove?? (actually use
-  /// for norep (public) to set origin for dest)
-  KnownDest,
-  /// route for error is included, end of payload should be proxyied.
-  Route,
-  /// if route is cached (info in local cache), report error with same route
-  CachedRoute,
-}
-
-/// Error handle info include in frame, also use for reply
-/// TODO split as ReplyInfo is split
-/// TODO generic not in tunnel
-#[derive(RustcDecodable,RustcEncodable,Debug,Clone)]
-pub enum MultipleReplyInfo<P : Peer> {
-  NoHandling,
-  KnownDest(<P as KeyVal>::Key),
-  Route, // route headers are to be read afterward
-  CachedRoute(usize), // usize is error code, and shadow is sim shadow of peer for reply
-}
-
-
-impl<P : Peer> MultipleReplyInfo<P> {
-  #[inline]
-  /// get error code return 0 if undefined
-  pub fn get_error_code(&self) -> usize {
-    match self {
-      &MultipleReplyInfo::CachedRoute(ec) => ec,
-      _ => 0,
-    }
-  }
-  fn do_cache(&self) -> bool {
-    match self {
-      &MultipleReplyInfo::CachedRoute(_) => true,
-      _ => false,
-    }
-  }
-
-  fn write_in_header<W : Write>(&mut self, inw : &mut W) -> Result<()> {
-    try!(bin_encode(self, inw, SizeLimit::Infinite).map_err(|e|BincErr(e)));
-    Ok(())
-  }
-  fn write_after<W : Write>(&mut self, inw : &mut W) -> Result<()> {
-    Ok(())
-  }
-
-
-}
-
 /// Cache for tunnel : mydht cache is not use directly to allow external library, but it a mydht
 /// cache can implement it very straight forwardly (trait is minimal here) except for creating a
 /// key

@@ -15,8 +15,10 @@ use readwrite_comp::{
 };
 use super::{
   TunnelWriter,
-  TunnelState,
   Info,
+};
+use super::common::{
+  TunnelState,
 };
 use std::io::{
   Write,

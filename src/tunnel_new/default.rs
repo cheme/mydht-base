@@ -3,8 +3,10 @@
 //! implementation even if the tunnel only implement send only or do not manage error
 use super::{
   TunnelWriter,
-  TunnelState,
   Info,
 };
 
+use super::common::{
+  TunnelState,
+};
 

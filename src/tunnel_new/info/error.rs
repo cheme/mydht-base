@@ -125,21 +125,21 @@ pub struct MulErrorProvider<E : ExtWrite + Clone, TNR : TunnelNoRep, RP : RouteP
   //type TR : TunnelReader;
 
 
-impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=TW>, RP : RouteProvider<P>>  ErrorProvider<P, MultiErrorInfo<E,TW>> for MulErrorProvider<E,TNR,RP> {
+impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=TW>, RP : RouteProvider<P>> ErrorProvider<P, MultiErrorInfo<E,TW>> for MulErrorProvider<E,TNR,RP> {
   /// Error infos bases for peers
   fn new_error_route (&mut self, route : &[&P]) -> Vec<MultiErrorInfo<E,TW>> {
      let mut res : Vec<MultiErrorInfo<E,TW>> = Vec::with_capacity(route.len());
 
      match self.mode {
        MultipleReplyMode::NoHandling | MultipleReplyMode::KnownDest => 
-           for i in 0..route.len() {
+           for i in 1..route.len() {
               res[i] = MultiErrorInfo {
                 error_handle : MultipleErrorInfo::NoHandling,
                 replyroute : None,
               };
             },
        MultipleReplyMode::OtherRoute => {
-           for i in 0..route.len() {
+           for i in 1..route.len() {
              let errorid = self.gen.gen();
              let rroute = TunnelWriterFull(self.tunrep.new_writer_no_reply_with_route(&self.routeprov.new_reply_route(route[i])));
               MultiErrorInfo {
@@ -155,7 +155,7 @@ impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=T
          let mut revroute = Vec::from(route);
          // reverse route to get a reply route
          revroute.reverse();
-           for i in 0..l {
+           for i in 1..l {
              let errorid = self.gen.gen();
               res[i] = if self.mintunlength > l - i {
                MultiErrorInfo {
@@ -172,7 +172,7 @@ impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=T
            }
        },
        MultipleReplyMode::CachedRoute => 
-            for i in 0..route.len() {
+            for i in 1..route.len() {
              let errorid = self.gen.gen();
               // write error code
               res[i] = MultiErrorInfo {

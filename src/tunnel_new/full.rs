@@ -1,3 +1,7 @@
+
+use rand::ThreadRng;
+use rand::thread_rng;
+use rand::Rng;
 use readwrite_comp::{
   MultiW,
   MultiWExt,
@@ -69,14 +73,14 @@ pub trait GenTunnelTraits {
   type RW : TunnelWriter;
   type RP : RouteProvider<Self::P>;
   type REP : ReplyProvider<Self::P, ReplyInfo<Self::RL,Self::P,Self::RW>,Self::SSW,Self::SSR>;
-  type EP : ErrorProvider<Self::P, ReplyInfo<Self::RL,Self::P,Self::RW>>;
+  type EP : ErrorProvider<Self::P, MultiErrorInfo<Self::RL,Self::RW>>;
 }
 
 /// Reply and Error info for full are currently hardcoded MultipleReplyInfo
 /// This is not the cas for FullW or FullR, that way only Full need to be reimplemented to use less 
 /// generic mode TODO make it generic ? (associated InfoMode type and info constructor)
-/// TODO remove E ??
-pub struct Full<TT : GenTunnelTraits, E : ExtWrite> {
+/// TODO remove E ?? or put in GenTunnel (not really generic
+pub struct Full<TT : GenTunnelTraits, E : ExtWrite + Clone> {
   pub me : TT::P,
   pub reply_mode : MultipleReplyMode,
   pub error_mode : MultipleReplyMode,
@@ -85,6 +89,8 @@ pub struct Full<TT : GenTunnelTraits, E : ExtWrite> {
   pub route_prov : TT::RP,
   pub reply_prov : TT::REP,
   pub error_prov : TT::EP,
+  pub rng : ThreadRng,
+  pub limiter_proto : E,
   pub _p : PhantomData<(TT,E)>,
 }
 
@@ -113,7 +119,7 @@ pub struct FullSRW {
 
 //impl TunnelNoRep for Full {
 
-impl<TT : GenTunnelTraits, E : ExtWrite> TunnelNoRep for Full<TT,E> {
+impl<TT : GenTunnelTraits, E : ExtWrite + Clone> TunnelNoRep for Full<TT,E> {
   type P = TT::P;
   type TW = FullW<ReplyInfo<TT::RL,TT::P,TT::RW>, MultiErrorInfo<TT::RL,TT::RW>, TT::P, E>;
   type TR = Nope; // TODO
@@ -144,7 +150,7 @@ impl<TT : GenTunnelTraits, E : ExtWrite> TunnelNoRep for Full<TT,E> {
   }
 
 }
-impl<TT : GenTunnelTraits, E : ExtWrite> Tunnel for Full<TT,E> {
+impl<TT : GenTunnelTraits, E : ExtWrite + Clone> Tunnel for Full<TT,E> {
   // reply info info needed to established conn
   type RI = ReplyInfo<TT::RL,TT::P,TT::RW>;
   /// no info for a reply on a reply (otherwhise establishing sym tunnel seems better)
@@ -166,7 +172,7 @@ impl<TT : GenTunnelTraits, E : ExtWrite> Tunnel for Full<TT,E> {
 }
 
 
-impl<TT : GenTunnelTraits, E : ExtWrite> TunnelError for Full<TT,E> {
+impl<TT : GenTunnelTraits, E : ExtWrite + Clone> TunnelError for Full<TT,E> {
   // TODO use a lighter error info type!!!
   type EI = ReplyInfo<TT::RL,TT::P,TT::RW>;
   /// can error on error, cannot reply also, if we need to reply or error on error that is a Reply 
@@ -191,7 +197,7 @@ impl<TT : GenTunnelTraits, E : ExtWrite> TunnelError for Full<TT,E> {
 }
 
 /// Tunnel which allow caching, and thus establishing connections
-impl<TT : GenTunnelTraits, E : ExtWrite> TunnelManager for Full<TT,E> {
+impl<TT : GenTunnelTraits, E : ExtWrite + Clone> TunnelManager for Full<TT,E> {
 
   // Shadow Sym (if established con)
   type SSW = TT::SSW;
@@ -233,35 +239,61 @@ impl<TT : GenTunnelTraits, E : ExtWrite> TunnelManager for Full<TT,E> {
 
 
 // This should be split for reuse in last or others (base fn todo)
-impl<TT : GenTunnelTraits, E : ExtWrite> Full<TT,E> {
+impl<TT : GenTunnelTraits, E : ExtWrite + Clone> Full<TT,E> {
 
   // TODO fuse with make_shads (lifetime issue on full : need to open it but first finish
   // make_shads fn
   fn next_shads (&mut self, p : &TT::P, state : TunnelState) -> Shadows<TT::P,E,ReplyInfo<TT::RL,TT::P,TT::RW>,MultiErrorInfo<TT::RL,TT::RW>> {
     let peers : Vec<&TT::P> = self.route_prov.new_route(p);
+    let mut errors = self.error_prov.new_error_route(&peers[..]);
+    let mut replies = self.reply_prov.new_reply(&peers[..]);
     let nbpeer = peers.len();
     // TODO rem type
     let mut shad : Vec<TunnelShadowW<TT::P,ReplyInfo<TT::RL,TT::P,TT::RW>,MultiErrorInfo<TT::RL,TT::RW>>> = Vec::with_capacity(nbpeer - 1);
-    // TODO rem type
-    // Warning here some case were removed from original impl
-    let mut add_symshad : Option<Vec<u8>> = if state.add_sim_key() {
-         Some(Vec::new())
-    }  else {None};
- 
 
-    panic!("TODO")
+    let mut next_proxy_peer = None;
+    let mut geniter = self.rng.gen_iter();
+
+
+    for i in (1..nbpeer).rev() {
+
+      shad.push(TunnelShadowW {
+        shad : peers[i-1].get_shadower(true),
+        next_proxy_peer : next_proxy_peer,
+        tunnel_id : geniter.next().unwrap(),
+        rep : replies.pop().unwrap(),
+        err : errors.pop().unwrap(),
+      });
+      next_proxy_peer = Some(peers[i-1].to_address());
+    }
+
+    CompExtW(MultiWExt::new(shad),self.limiter_proto.clone())
+
   }
   fn make_shads (&mut self, peers : &[&TT::P], state : TunnelState) -> Shadows<TT::P,E,ReplyInfo<TT::RL,TT::P,TT::RW>,MultiErrorInfo<TT::RL,TT::RW>> {
-    let errors = self.error_prov.new_error_route(peers);
+    let mut errors = self.error_prov.new_error_route(peers);
+    let mut replies = self.reply_prov.new_reply(peers);
     let nbpeer = peers.len();
     // TODO rem type
     let mut shad : Vec<TunnelShadowW<TT::P,ReplyInfo<TT::RL,TT::P,TT::RW>,MultiErrorInfo<TT::RL,TT::RW>>> = Vec::with_capacity(nbpeer - 1);
-    // TODO rem type
-    // Warning here some case were removed from original impl
-    let mut add_symshad : Option<Vec<u8>> = if state.add_sim_key() {
-         Some(Vec::new())
-    }  else {None};
- 
+
+    let mut next_proxy_peer = None;
+    let mut geniter = self.rng.gen_iter();
+
+
+    for i in (1..nbpeer).rev() {
+
+      shad.push(TunnelShadowW {
+        shad : peers[i-1].get_shadower(true),
+        next_proxy_peer : next_proxy_peer,
+        tunnel_id : geniter.next().unwrap(),
+        rep : replies.pop().unwrap(),
+        err : errors.pop().unwrap(),
+      });
+      next_proxy_peer = Some(peers[i-1].to_address());
+    }
+    CompExtW(MultiWExt::new(shad),self.limiter_proto.clone())
+
 /*  pub fn new<ER : ExtRead> (peers : &[(usize,&P)], e : E, mode : TunnelMode, state : TunnelState, error : Option<usize>, 
     headmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
     contmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
@@ -420,7 +452,6 @@ impl<TT : GenTunnelTraits, E : ExtWrite> Full<TT,E> {
   }
 */
 
-    unimplemented!()
   }
 
   fn make_cache_id (&mut self, state : TunnelState) -> Option<Vec<u8>> {

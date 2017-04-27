@@ -215,14 +215,14 @@ impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=T
      let l = route.len();
      match self.mode {
        MultipleReplyMode::NoHandling => 
-           for i in 0..l {
+           for i in 1..l {
               res[i] = ReplyInfo {
                 info : MultipleReplyInfo::NoHandling,
                 replyroute : None,
               }
            },
        MultipleReplyMode::KnownDest => {
-           for i in 0..l - 1 {
+           for i in 1..l - 1 {
               res[i] = ReplyInfo {
                 info : MultipleReplyInfo::NoHandling,
                 replyroute : None,
@@ -234,7 +234,7 @@ impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=T
            };
        },
        MultipleReplyMode::OtherRoute => {
-           for i in 0..l - 1 {
+           for i in 1..l - 1 {
               res[i] = ReplyInfo {
                 info : MultipleReplyInfo::NoHandling,
                 replyroute : None,
@@ -249,7 +249,7 @@ impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=T
   //fn new_writer_no_reply (&mut self, &Self::P) -> Self::TW; of TunnelNoRep : include TunnelNoRep
   //and a clonable limiter in mulerrorprovider
        MultipleReplyMode::Route => {
-           for i in 0..l - 1 {
+           for i in 1..l - 1 {
               res[i] = ReplyInfo {
                 info : MultipleReplyInfo::NoHandling,
                 replyroute : None,

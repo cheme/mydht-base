@@ -70,6 +70,9 @@ pub mod last;
 pub trait Info {
 //  type Base;
 //  fn new (Self::Base) -> Self;
+  // Sender Info , info required to read back what was send (error indexes, or symetric key for
+  // cached route)
+  //type SenderInfo;
   /// if it retun true, there is a need to cache
   /// this info for reply or error routing
   fn do_cache (&self) -> bool;
@@ -92,16 +95,19 @@ pub trait RepInfo : Info {
 /// P peer for route
 /// EI error info
 /// RI reply info
+/// Routes are always full with origin and dest
 pub trait RouteProvider<P : Peer> {
   /// only dest is used to create new route TODO new scheme later with multi dest 
   fn new_route (&mut self, &P) -> Vec<&P>;
   /// for bitunnel (arg is still dest our peer address is known to route provider) 
   fn new_reply_route (&mut self, &P) -> Vec<&P>;
 }
+/// Error info vec do not contain origin (start at index one of route)
 pub trait ErrorProvider<P : Peer, EI : Info> {
   /// Error infos bases for peers
   fn new_error_route (&mut self, &[&P]) -> Vec<EI>;
 }
+/// Reply info vec do not contain origin (start at index one of route)
 pub trait ReplyProvider<P : Peer, RI : RepInfo,SSW,SSR> : SymProvider<SSW,SSR> {
   /// reply info for dest (last in vec) is different from hop reply info : TODO add new associated type (cf
   /// RepInfo) to avoid mandatory enum on RI.

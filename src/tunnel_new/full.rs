@@ -61,14 +61,14 @@ pub trait GenTunnelTraits {
   type SSW : ExtWrite;
   type SSR : ExtRead;
   type TC : TunnelCache<Self::SSW,Self::SSR>;
-  type SP : SymProvider<Self::SSW,Self::SSR>;
+//  type SP : SymProvider<Self::SSW,Self::SSR>; use replyprovider instead
   /// Reply frame limiter (specific to use of reply once with header in frame
   /// TODO create a limiter trait which only is ExtWrite (to declare impl as limiter (in comp lib)?
   type RL : ExtWrite;
   /// Reply writer use only to include a reply envelope
   type RW : TunnelWriter;
   type RP : RouteProvider<Self::P>;
-  type REP : ReplyProvider<Self::P, ReplyInfo<Self::RL,Self::P,Self::RW>>;
+  type REP : ReplyProvider<Self::P, ReplyInfo<Self::RL,Self::P,Self::RW>,Self::SSW,Self::SSR>;
   type EP : ErrorProvider<Self::P, ReplyInfo<Self::RL,Self::P,Self::RW>>;
 }
 
@@ -81,7 +81,7 @@ pub struct Full<TT : GenTunnelTraits, E : ExtWrite> {
   pub reply_mode : MultipleReplyMode,
   pub error_mode : MultipleReplyMode,
   pub cache : TT::TC,
-  pub sym_prov : TT::SP,
+//  pub sym_prov : TT::SP,
   pub route_prov : TT::RP,
   pub reply_prov : TT::REP,
   pub error_prov : TT::EP,
@@ -115,7 +115,6 @@ pub struct FullSRW {
 
 impl<TT : GenTunnelTraits, E : ExtWrite> TunnelNoRep for Full<TT,E> {
   type P = TT::P;
-  // TODO a true ErrorInfo struct to remove error code from multiplereplyinfo
   type TW = FullW<ReplyInfo<TT::RL,TT::P,TT::RW>, MultiErrorInfo<TT::RL,TT::RW>, TT::P, E>;
   type TR = Nope; // TODO
 
@@ -219,11 +218,11 @@ impl<TT : GenTunnelTraits, E : ExtWrite> TunnelManager for Full<TT,E> {
   }
 
   fn new_sym_writer (&mut self, k : Vec<u8>) -> Self::SSW {
-    self.sym_prov.new_sym_writer(k)
+    self.reply_prov.new_sym_writer(k)
   }
 
   fn new_sym_reader (&mut self, k : Vec<u8>) -> Self::SSR {
-    self.sym_prov.new_sym_reader(k)
+    self.reply_prov.new_sym_reader(k)
   }
 
   fn new_cache_id (&mut self) -> Vec<u8> {
@@ -814,7 +813,7 @@ pub struct TunnelShadowW<P : Peer, RI : Info, EI : Info> {
 
   shad : <P as Peer>::Shadow,
   next_proxy_peer : Option<<P as Peer>::Address>,
-  tunnel_id : usize, // tunnelId change for every hop that is description tci TODO should only be for cached reply info or err pb same for both
+  tunnel_id : usize, // tunnelId change for every hop that is description tci TODO should only be for cached reply info or err pb same for both : TODO useless ? error code are currently in error info
   rep : RI,
   err : EI,
 

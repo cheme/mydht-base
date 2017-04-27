@@ -9,6 +9,7 @@ use super::super::{
   Info,
   TunnelWriter,
   ErrorProvider,
+  RouteProvider,
   TunnelNoRep,
 };
 /// wrong use need redesign TODO redesign it on specific trait (not TW as param)
@@ -57,7 +58,7 @@ pub struct MultiErrorInfo<E : ExtWrite,TW : TunnelWriter> {
 #[derive(RustcDecodable,RustcEncodable,Debug,Clone)]
 pub enum MultipleErrorInfo {
   NoHandling,
-  Route, // route headers are to be read afterward
+  Route(usize), // usize is error code (even if we reply with full route we still consider error code only
   CachedRoute(usize), // usize is error code
 }
 impl MultipleErrorInfo {
@@ -107,7 +108,16 @@ impl<E : ExtWrite,TW : TunnelWriter> Info for MultiErrorInfo<E,TW> {
 }
 
 /// TODO E as explicit limiter named trait for readability
-pub struct MulErrorProvider<E : ExtWrite + Clone, TNR : TunnelNoRep>(MultipleReplyMode,OsRng,E,TNR, bool);
+pub struct MulErrorProvider<E : ExtWrite + Clone, TNR : TunnelNoRep, RP : RouteProvider<TNR::P>> {
+  mode : MultipleReplyMode,
+  gen : OsRng,
+  lim : E,
+  tunrep : TNR,
+  // a minimum length for reply tunnel (currently for same route reply : if less no reply)
+  mintunlength : usize,
+  // for different reply route
+  routeprov : RP,
+}
 
 
 //type P : Peer;
@@ -115,12 +125,12 @@ pub struct MulErrorProvider<E : ExtWrite + Clone, TNR : TunnelNoRep>(MultipleRep
   //type TR : TunnelReader;
 
 
-impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=TW>>  ErrorProvider<P, MultiErrorInfo<E,TW>> for MulErrorProvider<E,TNR> {
+impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=TW>, RP : RouteProvider<P>>  ErrorProvider<P, MultiErrorInfo<E,TW>> for MulErrorProvider<E,TNR,RP> {
   /// Error infos bases for peers
   fn new_error_route (&mut self, route : &[&P]) -> Vec<MultiErrorInfo<E,TW>> {
      let mut res : Vec<MultiErrorInfo<E,TW>> = Vec::with_capacity(route.len());
 
-     match self.0 {
+     match self.mode {
        MultipleReplyMode::NoHandling | MultipleReplyMode::KnownDest => 
            for i in 0..route.len() {
               res[i] = MultiErrorInfo {
@@ -128,33 +138,48 @@ impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=T
                 replyroute : None,
               };
             },
-
-
-       MultipleReplyMode::Route => 
+       MultipleReplyMode::OtherRoute => {
            for i in 0..route.len() {
-             // TODO same as other route but with partial route from a new route cf original algo
+             let errorid = self.gen.gen();
+             let rroute = TunnelWriterFull(self.tunrep.new_writer_no_reply_with_route(&self.routeprov.new_reply_route(route[i])));
+              MultiErrorInfo {
+                error_handle : MultipleErrorInfo::Route(errorid),
+                replyroute : Some((self.lim.clone(), Box::new(rroute))),
+              };
+           }
        },
   //fn new_writer_no_reply (&mut self, &Self::P) -> Self::TW; of TunnelNoRep : include TunnelNoRep
   //and a clonable limiter in mulerrorprovider
-       MultipleReplyMode::OtherRoute => 
-           for i in 0..route.len() {
-              let replyroute  : TunnelWriterFull<TW> = TunnelWriterFull(self.3.new_writer_no_reply(route[0]));
-              res[i] = MultiErrorInfo {
-                error_handle : MultipleErrorInfo::Route,
-                // TODO new_writer_no_reply_from (so it start from dest aka route[i])
-                replyroute : Some((self.2.clone(), Box::new(replyroute))),
+       MultipleReplyMode::Route => {
+         let l = route.len();
+         let mut revroute = Vec::from(route);
+         // reverse route to get a reply route
+         revroute.reverse();
+           for i in 0..l {
+             let errorid = self.gen.gen();
+              res[i] = if self.mintunlength > l - i {
+               MultiErrorInfo {
+                 error_handle : MultipleErrorInfo::NoHandling,
+                 replyroute : None,
+               }
+              } else {
+                let rroute = TunnelWriterFull(self.tunrep.new_writer_no_reply_with_route(&revroute[i..]));
+                MultiErrorInfo {
+                 error_handle : MultipleErrorInfo::Route(errorid),
+                 replyroute : Some((self.lim.clone(), Box::new(rroute))),
+                }
               };
+           }
        },
        MultipleReplyMode::CachedRoute => 
             for i in 0..route.len() {
-             let errorid = self.1.gen();
+             let errorid = self.gen.gen();
               // write error code
               res[i] = MultiErrorInfo {
                 error_handle : MultipleErrorInfo::CachedRoute(errorid),
                 replyroute : None,
               };
            },
-
      }
  
 /*  pub fn errhandling_infos<P : Peer>(&self, route : &[(usize,&P)], error_route : Option<&[(usize,&P)]>) -> Vec<ErrorHandlingInfo<P>> {

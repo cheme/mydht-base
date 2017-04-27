@@ -79,6 +79,12 @@ pub trait Info {
 }
 
 pub trait RepInfo : Info {
+  /// TODO not a good trait, info could a generic get_cache_info (true to error info to), or the
+  /// write from info should be enough : TODO try to make it disapear, keep it for impl
+  /// compatibility with original
+  /// TODO RepInfo could have associated type actual reply (default is hop info) which may contain
+  /// this kind of info (original impl : if rep info is cached we read repeating keys so this
+  /// get_reply_key is logic).
   fn get_reply_key(&self) -> Option<&Vec<u8>>;
 }
 
@@ -87,18 +93,21 @@ pub trait RepInfo : Info {
 /// EI error info
 /// RI reply info
 pub trait RouteProvider<P : Peer> {
-  /// only dest is used to create new route TODO new scheme letter with multi dest 
+  /// only dest is used to create new route TODO new scheme later with multi dest 
   fn new_route (&mut self, &P) -> Vec<&P>;
-  /// for bitunnel (arg is still dest our peer addressi is known to route provider) 
+  /// for bitunnel (arg is still dest our peer address is known to route provider) 
   fn new_reply_route (&mut self, &P) -> Vec<&P>;
 }
 pub trait ErrorProvider<P : Peer, EI : Info> {
   /// Error infos bases for peers
   fn new_error_route (&mut self, &[&P]) -> Vec<EI>;
 }
-pub trait ReplyProvider<P : Peer, RI : RepInfo> {
-  /// Error infos bases for peers
-  fn new_reply (&mut self, &[&P]) -> RI;
+pub trait ReplyProvider<P : Peer, RI : RepInfo,SSW,SSR> : SymProvider<SSW,SSR> {
+  /// reply info for dest (last in vec) is different from hop reply info : TODO add new associated type (cf
+  /// RepInfo) to avoid mandatory enum on RI.
+  fn new_reply (&mut self, &[&P]) -> Vec<RI>;
+  //fn new_reply (&mut self, &[&P]) -> (Vec<RI>,RI::replypayload); // reply payload as optional in
+  //tunnel shadow instead of Replyinfo in tunnelshadowW
 }
 
 /// Tunnel trait could be in a single tunnel impl, but we use multiple to separate concerns a bit
@@ -260,7 +269,7 @@ pub trait TunnelCache<SSW,SSR> {
 
 /// TODO move with generic traits from full (should not be tunnel main module component
 pub trait SymProvider<SSW,SSR> {
+  fn new_sym_key (&mut self) -> Vec<u8>;
   fn new_sym_writer (&mut self, Vec<u8>) -> SSW;
-
   fn new_sym_reader (&mut self, Vec<u8>) -> SSR;
 }

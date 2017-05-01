@@ -100,6 +100,7 @@ pub trait RouteProvider<P : Peer> {
   /// only dest is used to create new route TODO new scheme later with multi dest 
   fn new_route (&mut self, &P) -> Vec<&P>;
   /// for bitunnel (arg is still dest our peer address is known to route provider) 
+  /// TODO seems useless : rev previous and in bitunnel a route provider is include
   fn new_reply_route (&mut self, &P) -> Vec<&P>;
 }
 /// Error info vec do not contain origin (start at index one of route)
@@ -108,7 +109,7 @@ pub trait ErrorProvider<P : Peer, EI : Info> {
   fn new_error_route (&mut self, &[&P]) -> Vec<EI>;
 }
 /// Reply info vec do not contain origin (start at index one of route)
-pub trait ReplyProvider<P : Peer, RI : RepInfo,SSW,SSR> : SymProvider<SSW,SSR> {
+pub trait ReplyProvider<P : Peer, RI : RepInfo,SSW,SSR> : SymProvider<SSW,SSR,P> {
   /// reply info for dest (last in vec) is different from hop reply info : TODO add new associated type (cf
   /// RepInfo) to avoid mandatory enum on RI.
   fn new_reply (&mut self, &[&P]) -> Vec<RI>;
@@ -159,27 +160,26 @@ pub trait TunnelError : TunnelNoRep {
   fn new_error_writer (&mut self, &Self::P, &Self::EI) -> Self::ETW;
 
 }
-
 /// Tunnel which allow caching, and thus establishing connections
 pub trait TunnelManager : Tunnel where Self::RI : RepInfo {
   // Shadow Sym (if established con)
-  type SSW : ExtWrite;
+  type SSCW : ExtWrite;
   // Shadow Sym (if established con)
-  type SSR : ExtRead;
+  type SSCR : ExtRead;
 
-  fn put_symw(&mut self, Self::SSW) -> Result<Vec<u8>>;
+  fn put_symw(&mut self, Self::SSCW, Vec<u8>) -> Result<()>;
 
-  fn get_symw(&mut self, &[u8]) -> Result<&mut Self::SSW>;
+  fn get_symw(&mut self, &[u8]) -> Result<&mut Self::SSCW>;
 
-  fn put_symr(&mut self, Self::SSR) -> Result<Vec<u8>>;
+  fn put_symr(&mut self, Self::SSCR) -> Result<Vec<u8>>;
 
-  fn get_symr(&mut self, &[u8]) -> Result<&mut Self::SSR>;
+  fn get_symr(&mut self, &[u8]) -> Result<&mut Self::SSCR>;
 
   fn use_sym_exchange (&Self::RI) -> bool;
 
-  fn new_sym_writer (&mut self, Vec<u8>) -> Self::SSW;
+  fn new_sym_writer (&mut self, Vec<u8>, &Self::P) -> Self::SSCW;
 
-  fn new_sym_reader (&mut self, Vec<u8>) -> Self::SSR;
+  fn new_sym_reader (&mut self, Vec<Vec<u8>>) -> Self::SSCR;
 
   fn new_cache_id (&mut self) -> Vec<u8>;
 }
@@ -257,25 +257,26 @@ impl From<BindErr> for IoError {
 /// key
 /// IOresult is used but only for the sake of lazyness (TODO)
 pub trait TunnelCache<SSW,SSR> {
-  fn put_symw_tunnel(&mut self, SSW) -> Result<Vec<u8>>;
-  fn get_symw_tunnel(&self, &[u8]) -> Result<&mut SSW>;
-  fn has_symw_tunnel(&self, k : &[u8]) -> bool {
+  fn put_symw_tunnel(&mut self, SSW, Vec<u8>) -> Result<()>;
+  fn get_symw_tunnel(&mut self, &[u8]) -> Result<&mut SSW>;
+  fn has_symw_tunnel(&mut self, k : &[u8]) -> bool {
     self.get_symw_tunnel(k).is_ok()
   }
 
   fn put_symr_tunnel(&mut self, SSR) -> Result<Vec<u8>>;
-  fn get_symr_tunnel(&self, &[u8]) -> Result<&mut SSR>;
-  fn has_symr_tunnel(&self, k : &[u8]) -> bool {
+  fn get_symr_tunnel(&mut self, &[u8]) -> Result<&mut SSR>;
+  fn has_symr_tunnel(&mut self, k : &[u8]) -> bool {
     self.get_symr_tunnel(k).is_ok()
   }
   fn new_cache_id (&mut self) -> Vec<u8>;
 
 }
 
-
 /// TODO move with generic traits from full (should not be tunnel main module component
-pub trait SymProvider<SSW,SSR> {
-  fn new_sym_key (&mut self) -> Vec<u8>;
+/// TODO add Peer as param ? old impl got its w/r from peer
+pub trait SymProvider<SSW,SSR,P> {
+  fn new_sym_key (&mut self, &P) -> Vec<u8>;
   fn new_sym_writer (&mut self, Vec<u8>) -> SSW;
   fn new_sym_reader (&mut self, Vec<u8>) -> SSR;
 }
+

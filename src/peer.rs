@@ -109,9 +109,7 @@ pub trait Shadow : ShadowBase {
 
   fn get_mode(&self) -> Self::ShadowMode;
 
-
   fn new_shadow_sim () -> IoResult<Self::ShadowSim>;
-
 
 }
 

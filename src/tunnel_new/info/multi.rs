@@ -102,10 +102,10 @@ impl<P : Peer> MultipleReplyInfo<P> {
 /// TODO for perf sake should be an enum (at least with the noreply : except for cache impl those
 /// ar null (too bug in tunnelshadoww) : the double option is not a good sign too
 pub struct ReplyInfo<E : ExtWrite, P : Peer,TW : TunnelWriter> {
-  info : MultipleReplyInfo<P>,
+  pub info : MultipleReplyInfo<P>,
   // reply route should be seen as a reply info : used to write the payload -> TODO redesign this
   // TODO not TunnelWriterFull in box to share with last
-  replyroute : Option<(E,Box<TunnelWriterFull<TW>>)>,
+  pub replyroute : Option<(E,Box<TunnelWriterFull<TW>>)>,
   //replyroute : Option<Box<(E,TunnelWriterFull<E,P,TW>)>>,
 }
 
@@ -180,22 +180,22 @@ impl<E : ExtWrite, P : Peer,TW : TunnelWriter> RepInfo for ReplyInfo<E,P,TW> {
 }
 
 /// TODO E as explicit limiter named trait for readability
-pub struct ReplyInfoProvider<E : ExtWrite + Clone, TNR : TunnelNoRep,SSW,SSR, SP : SymProvider<SSW,SSR>, RP : RouteProvider<TNR::P>> {
-  mode : MultipleReplyMode,
-  lim : E,
-  tunrep : TNR,
+pub struct ReplyInfoProvider<E : ExtWrite + Clone, TNR : TunnelNoRep,SSW,SSR, SP : SymProvider<SSW,SSR,TNR::P>, RP : RouteProvider<TNR::P>> {
+  pub mode : MultipleReplyMode,
+  pub lim : E,
+  pub tunrep : TNR,
   // for different reply route
-  symprov : SP,
-  routeprov : RP,
-  _p : PhantomData<(SSW,SSR)>,
+  pub symprov : SP,
+  pub routeprov : RP,
+  pub _p : PhantomData<(SSW,SSR)>,
 }
 
 /// TODO macro inherit??
-impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=TW>,SSW,SSR,SP : SymProvider<SSW,SSR>,RP : RouteProvider<TNR::P>> SymProvider<SSW,SSR> for ReplyInfoProvider<E,TNR,SSW,SSR,SP,RP> {
+impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=TW>,SSW,SSR,SP : SymProvider<SSW,SSR,P>,RP : RouteProvider<P>> SymProvider<SSW,SSR,P> for ReplyInfoProvider<E,TNR,SSW,SSR,SP,RP> {
 
   #[inline]
-  fn new_sym_key (&mut self) -> Vec<u8> {
-    self.symprov.new_sym_key()
+  fn new_sym_key (&mut self, p : &P) -> Vec<u8> {
+    self.symprov.new_sym_key(p)
   }
   #[inline]
   fn new_sym_writer (&mut self, k : Vec<u8>) -> SSW {
@@ -208,7 +208,8 @@ impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=T
 
 }
 
-impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=TW>,SSW,SSR,SP : SymProvider<SSW,SSR>,RP : RouteProvider<P>> ReplyProvider<P, ReplyInfo<E,P,TW>,SSW,SSR> for ReplyInfoProvider<E,TNR,SSW,SSR,SP,RP> {
+impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=TW>,SSW,SSR,SP : SymProvider<SSW,SSR,P>,RP : RouteProvider<P>> ReplyProvider<P, ReplyInfo<E,P,TW>,SSW,SSR> for ReplyInfoProvider<E,TNR,SSW,SSR,SP,RP> {
+
   /// Error infos bases for peers
   fn new_reply (&mut self, route : &[&P]) -> Vec<ReplyInfo<E,P,TW>> {
      let mut res : Vec<ReplyInfo<E,P,TW>> = Vec::with_capacity(route.len());
@@ -270,7 +271,7 @@ impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=T
             for i in 0..route.len() {
               // write error code
               res[i] = ReplyInfo {
-                info : MultipleReplyInfo::CachedRoute(self.new_sym_key()),
+                info : MultipleReplyInfo::CachedRoute(self.new_sym_key(route[i])),
                 replyroute : None,
               };
            },

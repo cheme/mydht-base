@@ -21,6 +21,9 @@ use super::{
   Info,
   RepInfo,
   SymProvider,
+  RouteProvider,
+  ErrorProvider,
+  ReplyProvider,
 };
 use std::io::{
   Write,
@@ -33,7 +36,7 @@ use peer::Peer;
 /**
  * No impl for instance when no error or no reply
  */
-pub struct Nope ();
+pub struct Nope;
 
 
 impl Info for Nope {
@@ -138,15 +141,15 @@ impl TunnelReader for Nope {
 }
 
 impl<SSW,SSR> TunnelCache<SSW,SSR> for Nope {
-  fn put_symw_tunnel(&mut self, _ : SSW) -> Result<Vec<u8>> {
+  fn put_symw_tunnel(&mut self, _ : SSW, _ : Vec<u8>) -> Result<()> {
     // TODO replace with actual erro
     unimplemented!()
   }
-  fn get_symw_tunnel(&self, _ : &[u8]) -> Result<&mut SSW> {
+  fn get_symw_tunnel(&mut self, _ : &[u8]) -> Result<&mut SSW> {
     // TODO replace with actual erro
     unimplemented!()
   }
-  fn has_symw_tunnel(&self, _ : &[u8]) -> bool {
+  fn has_symw_tunnel(&mut self, _ : &[u8]) -> bool {
     false
   }
 
@@ -154,22 +157,21 @@ impl<SSW,SSR> TunnelCache<SSW,SSR> for Nope {
     // TODO replace with actual erro
     unimplemented!()
   }
-  fn get_symr_tunnel(&self, _ : &[u8]) -> Result<&mut SSR> {
+  fn get_symr_tunnel(&mut self, _ : &[u8]) -> Result<&mut SSR> {
     // TODO replace with actual erro
     unimplemented!()
   }
-  fn has_symr_tunnel(&self, _ : &[u8]) -> bool {
+  fn has_symr_tunnel(&mut self, _ : &[u8]) -> bool {
     false
   }
   fn new_cache_id (&mut self) -> Vec<u8> {
     vec![]
   }
 }
-
 // TODO remove as only for dev progress
-impl<SSW,SSR> SymProvider<SSW,SSR> for Nope {
+impl<SSW,SSR,P> SymProvider<SSW,SSR,P> for Nope {
 
-  fn new_sym_key (&mut self) -> Vec<u8> {
+  fn new_sym_key (&mut self, _ : &P) -> Vec<u8> {
     panic!("Should only be use for dev");
   }
   fn new_sym_writer (&mut self, _ : Vec<u8>) -> SSW {
@@ -180,3 +182,27 @@ impl<SSW,SSR> SymProvider<SSW,SSR> for Nope {
   }
 
 }
+
+impl<P : Peer> RouteProvider<P> for Nope {
+
+  fn new_route (&mut self, _ : &P) -> Vec<&P> {
+    panic!("Placeholder, should not be called");
+  }
+  fn new_reply_route (&mut self, _ : &P) -> Vec<&P> {
+    panic!("Placeholder, should not be called");
+  }
+
+}
+
+impl<P : Peer, EI : Info> ErrorProvider<P,EI> for Nope {
+  fn new_error_route (&mut self, _ : &[&P]) -> Vec<EI> {
+    panic!("Placeholder, should not be called");
+  }
+}
+impl<P : Peer, RI : RepInfo,SSW,SSR> ReplyProvider<P,RI,SSW,SSR> for Nope {
+  fn new_reply (&mut self, _ : &[&P]) -> Vec<RI> {
+    panic!("Placeholder, should not be called");
+  }
+}
+
+

@@ -1,4 +1,5 @@
 
+
 use rand::ThreadRng;
 use rand::thread_rng;
 use rand::Rng;
@@ -62,25 +63,27 @@ use std::marker::PhantomData;
 /// TODO reply info and error generic !!! after test for full ok (at least)
 pub trait GenTunnelTraits {
   type P : Peer;
-  type SSW : ExtWrite;
-  type SSR : ExtRead;
-  type TC : TunnelCache<Self::SSW,Self::SSR>;
-//  type SP : SymProvider<Self::SSW,Self::SSR>; use replyprovider instead
   /// Reply frame limiter (specific to use of reply once with header in frame
-  /// TODO create a limiter trait which only is ExtWrite (to declare impl as limiter (in comp lib)?
-  type RL : ExtWrite;
+  type LW : ExtWrite + Clone; // limiter
+  type LR : ExtRead + Clone; // limiter
+  type SSW : ExtWrite;// symetric writer
+  type SSR : ExtRead;// seems userless (in rpely provider if needed)
+  type TC : TunnelCache<TunnelCachedWriterExt<Self::SSW,Self::LW>,TunnelCachedReaderExt<Self::SSR,Self::LR>>;
+
+//  type SP : SymProvider<Self::SSW,Self::SSR>; use replyprovider instead
+  type RP : RouteProvider<Self::P>;
   /// Reply writer use only to include a reply envelope
   type RW : TunnelWriter;
-  type RP : RouteProvider<Self::P>;
-  type REP : ReplyProvider<Self::P, ReplyInfo<Self::RL,Self::P,Self::RW>,Self::SSW,Self::SSR>;
-  type EP : ErrorProvider<Self::P, MultiErrorInfo<Self::RL,Self::RW>>;
+  type REP : ReplyProvider<Self::P, ReplyInfo<Self::LW,Self::P,Self::RW>,Self::SSW,Self::SSR>;
+  type EP : ErrorProvider<Self::P, MultiErrorInfo<Self::LW,Self::RW>>;
 }
 
 /// Reply and Error info for full are currently hardcoded MultipleReplyInfo
 /// This is not the cas for FullW or FullR, that way only Full need to be reimplemented to use less 
 /// generic mode TODO make it generic ? (associated InfoMode type and info constructor)
 /// TODO remove E ?? or put in GenTunnel (not really generic
-pub struct Full<TT : GenTunnelTraits, E : ExtWrite + Clone> {
+/// TODO multiplereplymode generic
+pub struct Full<TT : GenTunnelTraits> {
   pub me : TT::P,
   pub reply_mode : MultipleReplyMode,
   pub error_mode : MultipleReplyMode,
@@ -90,8 +93,9 @@ pub struct Full<TT : GenTunnelTraits, E : ExtWrite + Clone> {
   pub reply_prov : TT::REP,
   pub error_prov : TT::EP,
   pub rng : ThreadRng,
-  pub limiter_proto : E,
-  pub _p : PhantomData<(TT,E)>,
+  pub limiter_proto_w : TT::LW,
+  pub limiter_proto_r : TT::LR,
+  pub _p : PhantomData<TT>,
 }
 
 type Shadows<P : Peer, E : ExtWrite, RI : Info, EI : Info> = CompExtW<MultiWExt<TunnelShadowW<P,RI,EI>>,E>;
@@ -119,13 +123,13 @@ pub struct FullSRW {
 
 //impl TunnelNoRep for Full {
 
-impl<TT : GenTunnelTraits, E : ExtWrite + Clone> TunnelNoRep for Full<TT,E> {
+impl<TT : GenTunnelTraits> TunnelNoRep for Full<TT> {
   type P = TT::P;
-  type TW = FullW<ReplyInfo<TT::RL,TT::P,TT::RW>, MultiErrorInfo<TT::RL,TT::RW>, TT::P, E>;
+  type TW = FullW<ReplyInfo<TT::LW,TT::P,TT::RW>, MultiErrorInfo<TT::LW,TT::RW>, TT::P, TT::LW>;
   type TR = Nope; // TODO
 
   fn new_reader_no_reply (&mut self, _ : &Self::P) -> Self::TR {
-    Nope()
+    Nope
   }
   fn new_writer_no_reply (&mut self, p : &Self::P) -> Self::TW {
     let state = TunnelState::ReplyOnce;
@@ -148,13 +152,13 @@ impl<TT : GenTunnelTraits, E : ExtWrite + Clone> TunnelNoRep for Full<TT,E> {
     }
 
   }
-
 }
-impl<TT : GenTunnelTraits, E : ExtWrite + Clone> Tunnel for Full<TT,E> {
+
+impl<TT : GenTunnelTraits> Tunnel for Full<TT> {
   // reply info info needed to established conn
-  type RI = ReplyInfo<TT::RL,TT::P,TT::RW>;
+  type RI = ReplyInfo<TT::LW,TT::P,TT::RW>;
   /// no info for a reply on a reply (otherwhise establishing sym tunnel seems better)
-  type RTW = FullW<Nope, ReplyInfo<TT::RL,TT::P,TT::RW>, TT::P, E>;
+  type RTW = FullW<Nope, ReplyInfo<TT::LW,TT::P,TT::RW>, TT::P, TT::LW>;
   fn new_writer (&mut self, p : &Self::P) -> Self::TW {
     let state = TunnelState::QueryOnce;
     let ccid = self.make_cache_id(state.clone());
@@ -172,9 +176,9 @@ impl<TT : GenTunnelTraits, E : ExtWrite + Clone> Tunnel for Full<TT,E> {
 }
 
 
-impl<TT : GenTunnelTraits, E : ExtWrite + Clone> TunnelError for Full<TT,E> {
+impl<TT : GenTunnelTraits> TunnelError for Full<TT> {
   // TODO use a lighter error info type!!!
-  type EI = ReplyInfo<TT::RL,TT::P,TT::RW>;
+  type EI = ReplyInfo<TT::LW,TT::P,TT::RW>;
   /// can error on error, cannot reply also, if we need to reply or error on error that is a Reply 
   /// TODO make a specific type for error reply : either cached or replyinfo for full error
   type ETW = Nope;
@@ -197,25 +201,25 @@ impl<TT : GenTunnelTraits, E : ExtWrite + Clone> TunnelError for Full<TT,E> {
 }
 
 /// Tunnel which allow caching, and thus establishing connections
-impl<TT : GenTunnelTraits, E : ExtWrite + Clone> TunnelManager for Full<TT,E> {
+impl<TT : GenTunnelTraits> TunnelManager for Full<TT> {
 
   // Shadow Sym (if established con)
-  type SSW = TT::SSW;
+  type SSCW = TunnelCachedWriterExt<TT::SSW,TT::LW>;
   // Shadow Sym (if established con)
-  type SSR = TT::SSR;
+  type SSCR = TunnelCachedReaderExt<TT::SSR,TT::LR>;
 
-  fn put_symw(&mut self, w : Self::SSW) -> Result<Vec<u8>> {
-    self.cache.put_symw_tunnel(w)
+  fn put_symw(&mut self, w : Self::SSCW, k : Vec<u8>) -> Result<()> {
+    self.cache.put_symw_tunnel(w,k)
   }
 
-  fn get_symw(&mut self, k : &[u8]) -> Result<&mut Self::SSW> {
+  fn get_symw(&mut self, k : &[u8]) -> Result<&mut Self::SSCW> {
     self.cache.get_symw_tunnel(k)
   }
-  fn put_symr(&mut self, w : Self::SSR) -> Result<Vec<u8>> {
+  fn put_symr(&mut self, w : Self::SSCR) -> Result<Vec<u8>> {
     self.cache.put_symr_tunnel(w)
   }
 
-  fn get_symr(&mut self, k : &[u8]) -> Result<&mut Self::SSR> {
+  fn get_symr(&mut self, k : &[u8]) -> Result<&mut Self::SSCR> {
     self.cache.get_symr_tunnel(k)
   }
 
@@ -223,12 +227,13 @@ impl<TT : GenTunnelTraits, E : ExtWrite + Clone> TunnelManager for Full<TT,E> {
     ri.do_cache()
   }
 
-  fn new_sym_writer (&mut self, k : Vec<u8>) -> Self::SSW {
-    self.reply_prov.new_sym_writer(k)
+  fn new_sym_writer (&mut self, k : Vec<u8>, p : &Self::P) -> Self::SSCW {
+    let skey = self.reply_prov.new_sym_key(p);
+    TunnelCachedWriterExt::new(self.reply_prov.new_sym_writer(skey), k, self.limiter_proto_w.clone())
   }
 
-  fn new_sym_reader (&mut self, k : Vec<u8>) -> Self::SSR {
-    self.reply_prov.new_sym_reader(k)
+  fn new_sym_reader (&mut self, ks : Vec<Vec<u8>>) -> Self::SSCR {
+    new_dest_cached_reader_ext(ks.into_iter().map(|k|self.reply_prov.new_sym_reader(k)).collect(), self.limiter_proto_r.clone())
   }
 
   fn new_cache_id (&mut self) -> Vec<u8> {
@@ -239,17 +244,17 @@ impl<TT : GenTunnelTraits, E : ExtWrite + Clone> TunnelManager for Full<TT,E> {
 
 
 // This should be split for reuse in last or others (base fn todo)
-impl<TT : GenTunnelTraits, E : ExtWrite + Clone> Full<TT,E> {
+impl<TT : GenTunnelTraits> Full<TT> {
 
   // TODO fuse with make_shads (lifetime issue on full : need to open it but first finish
   // make_shads fn
-  fn next_shads (&mut self, p : &TT::P, state : TunnelState) -> Shadows<TT::P,E,ReplyInfo<TT::RL,TT::P,TT::RW>,MultiErrorInfo<TT::RL,TT::RW>> {
+  fn next_shads (&mut self, p : &TT::P, state : TunnelState) -> Shadows<TT::P,TT::LW,ReplyInfo<TT::LW,TT::P,TT::RW>,MultiErrorInfo<TT::LW,TT::RW>> {
     let peers : Vec<&TT::P> = self.route_prov.new_route(p);
     let mut errors = self.error_prov.new_error_route(&peers[..]);
     let mut replies = self.reply_prov.new_reply(&peers[..]);
     let nbpeer = peers.len();
     // TODO rem type
-    let mut shad : Vec<TunnelShadowW<TT::P,ReplyInfo<TT::RL,TT::P,TT::RW>,MultiErrorInfo<TT::RL,TT::RW>>> = Vec::with_capacity(nbpeer - 1);
+    let mut shad : Vec<TunnelShadowW<TT::P,ReplyInfo<TT::LW,TT::P,TT::RW>,MultiErrorInfo<TT::LW,TT::RW>>> = Vec::with_capacity(nbpeer - 1);
 
     let mut next_proxy_peer = None;
     let mut geniter = self.rng.gen_iter();
@@ -267,15 +272,15 @@ impl<TT : GenTunnelTraits, E : ExtWrite + Clone> Full<TT,E> {
       next_proxy_peer = Some(peers[i-1].to_address());
     }
 
-    CompExtW(MultiWExt::new(shad),self.limiter_proto.clone())
+    CompExtW(MultiWExt::new(shad),self.limiter_proto_w.clone())
 
   }
-  fn make_shads (&mut self, peers : &[&TT::P], state : TunnelState) -> Shadows<TT::P,E,ReplyInfo<TT::RL,TT::P,TT::RW>,MultiErrorInfo<TT::RL,TT::RW>> {
+  fn make_shads (&mut self, peers : &[&TT::P], state : TunnelState) -> Shadows<TT::P,TT::LW,ReplyInfo<TT::LW,TT::P,TT::RW>,MultiErrorInfo<TT::LW,TT::RW>> {
     let mut errors = self.error_prov.new_error_route(peers);
     let mut replies = self.reply_prov.new_reply(peers);
     let nbpeer = peers.len();
     // TODO rem type
-    let mut shad : Vec<TunnelShadowW<TT::P,ReplyInfo<TT::RL,TT::P,TT::RW>,MultiErrorInfo<TT::RL,TT::RW>>> = Vec::with_capacity(nbpeer - 1);
+    let mut shad : Vec<TunnelShadowW<TT::P,ReplyInfo<TT::LW,TT::P,TT::RW>,MultiErrorInfo<TT::LW,TT::RW>>> = Vec::with_capacity(nbpeer - 1);
 
     let mut next_proxy_peer = None;
     let mut geniter = self.rng.gen_iter();
@@ -292,7 +297,7 @@ impl<TT : GenTunnelTraits, E : ExtWrite + Clone> Full<TT,E> {
       });
       next_proxy_peer = Some(peers[i-1].to_address());
     }
-    CompExtW(MultiWExt::new(shad),self.limiter_proto.clone())
+    CompExtW(MultiWExt::new(shad),self.limiter_proto_w.clone())
 
 /*  pub fn new<ER : ExtRead> (peers : &[(usize,&P)], e : E, mode : TunnelMode, state : TunnelState, error : Option<usize>, 
     headmode : <<P as Peer>::Shadow as Shadow>::ShadowMode,
@@ -887,5 +892,56 @@ impl<P : Peer, RI : Info, EI : Info> ExtWrite for TunnelShadowW<P,RI,EI> {
   }
 }
 
+// ------------ cached sym
+pub struct TunnelCachedWriterExt<SW : ExtWrite,E : ExtWrite> {
+  shads: CompExtW<SW,E>,
+  dest_cache_id: Vec<u8>,
+}
+
+impl<SW : ExtWrite,E : ExtWrite> TunnelCachedWriterExt<SW,E> {
+  pub fn new (sim : SW, next_cache_id : Vec<u8>, limit : E) -> Self
+  {
+    TunnelCachedWriterExt {
+      shads : CompExtW(sim, limit),
+      dest_cache_id : next_cache_id,
+    }
+  }
+}
+
+
+impl<SW : ExtWrite,E : ExtWrite> ExtWrite for TunnelCachedWriterExt<SW,E> {
+
+  #[inline]
+  fn write_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    try!(bin_encode(&TunnelState::ReplyCached, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    try!(bin_encode(&self.dest_cache_id, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    self.shads.write_header(w)
+  }
+  #[inline]
+  fn write_into<W : Write>(&mut self, w : &mut W, cont: &[u8]) -> Result<usize> {
+    self.shads.write_into(w,cont)
+  }
+  #[inline]
+  fn write_all_into<W : Write>(&mut self, w : &mut W, buf : &[u8]) -> Result<()> {
+    self.shads.write_all_into(w, buf)
+  }
+  #[inline]
+  fn flush_into<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    self.shads.flush_into(w)
+  }
+  #[inline]
+  fn write_end<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    self.shads.write_end(w)
+  }
+}
+
+/**
+ * reader for a dest of tunnel cached
+ */
+pub type TunnelCachedReaderExt<SR,E> = CompExtR<MultiRExt<SR>,E>;
+
+fn new_dest_cached_reader_ext<SR : ExtRead, E : ExtRead> (sim : Vec<SR>, limit : E) -> TunnelCachedReaderExt<SR,E> {
+  CompExtR(MultiRExt::new(sim), limit)
+}
 
 

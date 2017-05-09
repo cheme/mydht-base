@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use readwrite_comp::{
   MultiW,
   MultiWExt,
@@ -15,6 +16,8 @@ use readwrite_comp::{
 };
 use super::{
   TunnelWriter,
+  TunnelNoRep,
+  TunnelWriterExt,
   TunnelCache,
   TunnelErrorWriter,
   TunnelReader,
@@ -36,14 +39,11 @@ use peer::Peer;
 /**
  * No impl for instance when no error or no reply
  */
+#[derive(Clone)]
 pub struct Nope;
 
 
 impl Info for Nope {
-  #[inline]
-  fn do_cache (&self) -> bool {
-    false
-  }
   #[inline]
   fn write_in_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
     Ok(())
@@ -54,6 +54,11 @@ impl Info for Nope {
   }
 }
 impl RepInfo for Nope {
+  #[inline]
+  fn do_cache (&self) -> bool {
+    false
+  }
+
   #[inline]
   fn get_reply_key(&self) -> Option<&Vec<u8>> {
     None
@@ -118,7 +123,7 @@ impl TunnelWriter for Nope {
   #[inline]
   fn write_tunnel_header<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
   #[inline]
-  fn write_simkeys_into< W : Write>( &mut self, _ : &mut W) -> Result<()> {
+  fn write_dest_info< W : Write>( &mut self, _ : &mut W) -> Result<()> {
     unimplemented!()
   }
   #[inline]
@@ -132,6 +137,12 @@ impl TunnelWriter for Nope {
 
 }
 
+impl TunnelWriterExt for Nope {
+  type TW = Nope;
+  fn get_writer(&mut self) -> &mut Self::TW {
+    self
+  }
+}
 impl TunnelErrorWriter for Nope {
   fn write_error<W : Write>(&mut self, _ : &mut W, _ : usize) -> Result<()> {
     Ok(())
@@ -204,5 +215,4 @@ impl<P : Peer, RI : RepInfo,SSW,SSR> ReplyProvider<P,RI,SSW,SSR> for Nope {
     panic!("Placeholder, should not be called");
   }
 }
-
 

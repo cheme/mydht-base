@@ -21,6 +21,7 @@ use readwrite_comp::{
 use std::io::{
   Write,
   Read,
+  Cursor,
   Result,
 };
 use keyval::KeyVal; // Trait actually use TODO find pragma for it
@@ -32,6 +33,7 @@ use bincode::rustc_serialize::{
 };
 use super::{
   TunnelWriter,
+  TunnelWriterExt,
   TunnelError,
   Info,
   RepInfo,
@@ -59,7 +61,7 @@ use super::nope::Nope;
 use std::marker::PhantomData;
 /// Generic Tunnel Traits, use as a traits container for a generic tunnel implementation
 /// (to reduce number of trait parameter), it is mainly here to reduce number of visible trait
-/// parameters in code
+/// parameters in code, 
 /// TODO reply info and error generic !!! after test for full ok (at least)
 pub trait GenTunnelTraits {
   type P : Peer;
@@ -73,7 +75,7 @@ pub trait GenTunnelTraits {
 //  type SP : SymProvider<Self::SSW,Self::SSR>; use replyprovider instead
   type RP : RouteProvider<Self::P>;
   /// Reply writer use only to include a reply envelope
-  type RW : TunnelWriter;
+  type RW : TunnelWriterExt;
   type REP : ReplyProvider<Self::P, ReplyInfo<Self::LW,Self::P,Self::RW>,Self::SSW,Self::SSR>;
   type EP : ErrorProvider<Self::P, MultiErrorInfo<Self::LW,Self::RW>>;
 }
@@ -126,13 +128,14 @@ pub struct FullSRW {
 impl<TT : GenTunnelTraits> TunnelNoRep for Full<TT> {
   type P = TT::P;
   type TW = FullW<ReplyInfo<TT::LW,TT::P,TT::RW>, MultiErrorInfo<TT::LW,TT::RW>, TT::P, TT::LW>;
+  type W = TunnelWriterFull<Self::TW>;
   type TR = Nope; // TODO
 
-  fn new_reader_no_reply (&mut self, _ : &Self::P) -> Self::TR {
+  fn new_reader (&mut self, _ : &Self::P) -> Self::TR {
     Nope
   }
-  fn new_writer_no_reply (&mut self, p : &Self::P) -> Self::TW {
-    let state = TunnelState::ReplyOnce;
+  fn new_tunnel_writer (&mut self, p : &Self::P) -> Self::TW {
+    let state = self.get_write_state();
     let ccid = self.make_cache_id(state.clone());
     let shads = self.next_shads(p, state.clone());
     FullW {
@@ -141,8 +144,12 @@ impl<TT : GenTunnelTraits> TunnelNoRep for Full<TT> {
       shads: shads,
     }
   }
-  fn new_writer_no_reply_with_route (&mut self, route : &[&Self::P]) -> Self::TW {
-  let state = TunnelState::ReplyOnce;
+  #[inline]
+  fn new_writer (&mut self, p : &Self::P) -> Self::W {
+    TunnelWriterFull(self.new_tunnel_writer (p))
+  }
+  fn new_tunnel_writer_with_route (&mut self, route : &[&Self::P]) -> Self::TW {
+  let state = self.get_write_state();
     let ccid = self.make_cache_id(state.clone());
     let shads = self.make_shads(route, state.clone());
     FullW {
@@ -150,8 +157,12 @@ impl<TT : GenTunnelTraits> TunnelNoRep for Full<TT> {
       state : state,
       shads: shads,
     }
-
   }
+  #[inline]
+  fn new_writer_with_route (&mut self, route : &[&Self::P]) -> Self::W {
+    TunnelWriterFull(self.new_tunnel_writer_with_route(route))
+  }
+
 }
 
 impl<TT : GenTunnelTraits> Tunnel for Full<TT> {
@@ -159,16 +170,7 @@ impl<TT : GenTunnelTraits> Tunnel for Full<TT> {
   type RI = ReplyInfo<TT::LW,TT::P,TT::RW>;
   /// no info for a reply on a reply (otherwhise establishing sym tunnel seems better)
   type RTW = FullW<Nope, ReplyInfo<TT::LW,TT::P,TT::RW>, TT::P, TT::LW>;
-  fn new_writer (&mut self, p : &Self::P) -> Self::TW {
-    let state = TunnelState::QueryOnce;
-    let ccid = self.make_cache_id(state.clone());
-    let shads = self.next_shads(p, state.clone());
-    FullW {
-      current_cache_id : ccid,
-      state : state,
-      shads: shads,
-    }
-  }
+  
   fn new_reply_writer (&mut self, p : &Self::P, ri : &Self::RI) -> Self::RTW {
     // TODO fn reply as an extwriter with ri as param may need to change RTW type
     unimplemented!()
@@ -245,6 +247,17 @@ impl<TT : GenTunnelTraits> TunnelManager for Full<TT> {
 
 // This should be split for reuse in last or others (base fn todo)
 impl<TT : GenTunnelTraits> Full<TT> {
+
+  /// get state for writing depending on reply
+  fn get_write_state (&self) -> TunnelState {
+    match self.reply_mode {
+      MultipleReplyMode::NoHandling => TunnelState::QueryOnce,
+      MultipleReplyMode::KnownDest => TunnelState::QueryOnce,
+      MultipleReplyMode::Route => TunnelState::QueryOnce,
+      MultipleReplyMode::OtherRoute => TunnelState::QueryOnce,
+      MultipleReplyMode::CachedRoute => TunnelState::QueryCached,
+    }
+  }
 
   // TODO fuse with make_shads (lifetime issue on full : need to open it but first finish
   // make_shads fn
@@ -669,15 +682,32 @@ impl<TT : GenTunnelTraits> Full<TT> {
 /// multi.rs
 pub struct TunnelWriterFull<TW : TunnelWriter> (pub TW);
 
-/// TODO this impl must move to all TunnelWriter
+impl<TW : TunnelWriter> TunnelWriterExt for TunnelWriterFull<TW> {
+  type TW = TW;
+  fn get_writer(&mut self) -> &mut Self::TW {
+    &mut self.0
+  }
+
+}
+/// TODO this impl must move to all TunnelWriter : should not be generic : useless gen in tunnel
+/// trait : makes it complex
 impl<TW : TunnelWriter> ExtWrite for TunnelWriterFull<TW> {
   #[inline]
   fn write_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
     try!(self.0.write_state(w));
     try!(self.0.write_connect_info(w));
     try!(self.0.write_tunnel_header(w));
+
+    // WARNING Big Buff here (only for emitter), with all ri in memory : to keep safe code
+    // Only use to write ri and ei info from all shads encoded by all shads
+    // TODO overhead could be lower with fix size buffer and redesign of write_dest_info to use
+    // buffer instead of write
+    let mut buff = Cursor::new(Vec::new());
+    try!(self.0.write_dest_info(&mut buff));
+    self.write_all_into(w,buff.get_ref());
     Ok(())
   }
+
 
   #[inline]
   fn write_into<W : Write>(&mut self, w : &mut W, cont : &[u8]) -> Result<usize> {
@@ -688,7 +718,7 @@ impl<TW : TunnelWriter> ExtWrite for TunnelWriterFull<TW> {
   fn write_all_into<W : Write>(&mut self, w : &mut W, cont : &[u8]) -> Result<()> {
     self.0.write_tunnel_all_into(w,cont)
   }
-
+  #[inline]
   #[inline]
   fn flush_into<W : Write>(&mut self, w : &mut W) -> Result<()> {
     self.0.flush_tunnel_into(w)
@@ -704,7 +734,8 @@ impl<TW : TunnelWriter> ExtWrite for TunnelWriterFull<TW> {
 
   #[inline]
   fn write_end<W : Write>(&mut self, w : &mut W) -> Result<()> {
-    self.0.write_tunnel_end(w)
+    try!(self.0.write_tunnel_end(w));
+    Ok(())
 /*    if let TunnelMode::NoTunnel = self.mode {
       return Ok(())
     } else {
@@ -739,8 +770,17 @@ impl ExtRead for TunnelReaderFull {
   }
 }
 
+pub type TunnelWriterFullW<'a, 'b, TW : TunnelWriter + 'b, W : 'a + Write> = CompW<'a,'b,W,TunnelWriterFull<TW>>;
+impl<TW : TunnelWriter> TunnelWriterFull<TW> {
+  #[inline]
+  pub fn as_write<'a,'b,W : Write>(&'b mut self, w : &'a mut W) -> TunnelWriterFullW<'a, 'b, TW, W> {
+    CompW::new(w, self)
+  }
+}
+
 
 impl<E : ExtWrite, P : Peer, RI : RepInfo, EI : Info> TunnelWriter for FullW<RI,EI,P,E> {
+
   #[inline]
   fn write_state<W : Write>(&mut self, w : &mut W) -> Result<()> {
     try!(bin_encode(&self.state, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
@@ -757,6 +797,65 @@ impl<E : ExtWrite, P : Peer, RI : RepInfo, EI : Info> TunnelWriter for FullW<RI,
 //    }
     Ok(())
   }
+
+  fn write_dest_info<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    if let TunnelState::ReplyOnce  = self.state {
+
+      // write all simkeys (inner dest_inof to open multi
+      // not all key must be define
+      let len : usize = self.shads.0.inner_extwrites().len();
+
+      // TODO do not bin encode usize
+      try!(bin_encode(&len, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+      for i in 0..len {
+        match self.shads.0.inner_extwrites_mut().get_mut(i) {
+          Some(ref mut sh) =>  {
+            try!(sh.err.write_after(w));
+            try!(sh.rep.write_after(w));
+          },
+          None => (),
+        }
+      }
+    }
+    Ok(())
+  }
+/*      let mut inw  = CompExtWInner(w, &mut self.shads);
+      try!(bin_encode(&len, inw, SizeLimit::Infinite).map_err(|e|BincErr(e)));*/
+//      let mut key = None;
+      // copy/clone each key due to lifetime, this is not optimal
+      //
+/*      for i in 0..len {
+        match self.shads.0.inner_extwrites().get_mut(i) {
+          Some(ref sh) =>  {
+            let mut inw  = CompExtWInner(w, &mut self.shads);
+            try!(sh.err.write_after(&mut inw));
+            try!(sh.rep.write_after(&mut inw));
+          },*/
+          /*match sh.rep.get_reply_key() {
+            Some(sk) => if key.is_none() {
+              key = Some(sk.clone());
+            } else {
+              key.as_mut().map(|k|k.clone_from(&sk));
+            },
+            None => key = None,
+          },
+          None => key = None,
+        }
+        match key {
+          Some(ref k) => try!(self.shads.write_all_into(w, &k)),
+          None => (),
+        }*/
+
+  /*        None => (),
+      }
+    }
+  }
+  Ok(())
+  }
+
+*/
+
+
   #[inline]
   fn write_tunnel_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
     try!(self.shads.write_header(w));
@@ -804,34 +903,6 @@ impl<E : ExtWrite, P : Peer, RI : RepInfo, EI : Info> TunnelWriter for FullW<RI,
       //match self.shacont.as_mut() {
        // Some (s) => try!(s.write_end(w)),
     self.shads.write_end(w)
-  }
-
-
- fn write_simkeys_into< W : Write>( &mut self, w : &mut W) -> Result<()> {
-  // not all key must be define
-  let len : usize = self.shads.0.inner_extwrites().iter().fold(0,|i,item|if item.rep.get_reply_key().is_some() {i+1} else {i});
-  try!(bin_encode(&len, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
-  let mut key = None;
-  // copy/clone each key due to lifetime, this is not optimal
-  for i in 0..len {
-    match self.shads.0.inner_extwrites().get(i) {
-      Some(ref sh) => match sh.rep.get_reply_key() {
-        Some(sk) => if key.is_none() {
-          key = Some(sk.clone());
-        } else {
-          key.as_mut().map(|k|k.clone_from(&sk));
-        },
-        None => key = None,
-      },
-      None => key = None,
-    }
-    match key {
-      Some(ref k) => try!(self.shads.write_all_into(w, &k)),
-      None => (),
-    }
-
-  }
-  Ok(())
   }
 
 
@@ -885,8 +956,6 @@ impl<P : Peer, RI : Info, EI : Info> ExtWrite for TunnelShadowW<P,RI,EI> {
     // error (dif between EI and RI in this case)
     // This is simply that we are added to the end but in various layers.
     // reply or error route TODO having it after had write end is odd (even if at this level we are
-    try!(self.err.write_after(w));
-    try!(self.rep.write_after(w));
 
     Ok(())
   }

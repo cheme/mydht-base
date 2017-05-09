@@ -8,6 +8,7 @@ use super::super::{
   RepInfo,
   Info,
   TunnelWriter,
+  TunnelWriterExt,
   ErrorProvider,
   RouteProvider,
   TunnelNoRep,
@@ -47,11 +48,11 @@ use super::multi::{
 
 
 // TODO remove all useless
-pub struct MultiErrorInfo<E : ExtWrite,TW : TunnelWriter> {
+pub struct MultiErrorInfo<E : ExtWrite,TW : TunnelWriterExt> {
   error_handle : MultipleErrorInfo, // error handle definition
   // reply route should be seen as a reply info : used to write the payload -> TODO redesign this
   // TODO not TunnelWriterFull in box to share with last
-  replyroute : Option<(E,Box<TunnelWriterFull<TW>>)>,
+  replyroute : Option<(E,Box<TW>)>,
   //replyroute : Option<Box<(E,TunnelWriterFull<E,P,TW>)>>,
 }
 
@@ -70,12 +71,8 @@ impl MultipleErrorInfo {
     }
   }
 }
-impl<E : ExtWrite,TW : TunnelWriter> Info for MultiErrorInfo<E,TW> {
+impl<E : ExtWrite,TW : TunnelWriterExt> Info for MultiErrorInfo<E,TW> {
   
-  fn do_cache (&self) -> bool {
-    self.error_handle.do_cache()
-  }
-
 
   fn write_in_header<W : Write>(&mut self, inw : &mut W) -> Result<()> {
     try!(bin_encode(&self.error_handle, inw, SizeLimit::Infinite).map_err(|e|BincErr(e)));
@@ -94,7 +91,7 @@ impl<E : ExtWrite,TW : TunnelWriter> Info for MultiErrorInfo<E,TW> {
           // currently same for error
           // put simkeys for reply TODO only if reply expected : move to full reply route ReplyInfo
           // impl -> Reply Info not need to be write into
-          try!(rr.0.write_simkeys_into(&mut inw));
+          try!(rr.get_writer().write_dest_info(&mut inw));
 
           try!(rr.write_end(&mut inw));
         }
@@ -125,27 +122,27 @@ pub struct MulErrorProvider<E : ExtWrite + Clone, TNR : TunnelNoRep, RP : RouteP
   //type TR : TunnelReader;
 
 
-impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=TW>, RP : RouteProvider<P>> ErrorProvider<P, MultiErrorInfo<E,TW>> for MulErrorProvider<E,TNR,RP> {
+impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, W : TunnelWriterExt<TW=TW>, TNR : TunnelNoRep<P=P,W=W,TW=TW>,RP : RouteProvider<P>> ErrorProvider<P, MultiErrorInfo<E,W>> for MulErrorProvider<E,TNR,RP> {
   /// Error infos bases for peers
-  fn new_error_route (&mut self, route : &[&P]) -> Vec<MultiErrorInfo<E,TW>> {
-     let mut res : Vec<MultiErrorInfo<E,TW>> = Vec::with_capacity(route.len());
+  fn new_error_route (&mut self, route : &[&P]) -> Vec<MultiErrorInfo<E,W>> {
+     let mut res : Vec<MultiErrorInfo<E,W>> = Vec::with_capacity(route.len()-1);
 
      match self.mode {
        MultipleReplyMode::NoHandling | MultipleReplyMode::KnownDest => 
            for i in 1..route.len() {
-              res[i] = MultiErrorInfo {
+              res.push(MultiErrorInfo {
                 error_handle : MultipleErrorInfo::NoHandling,
                 replyroute : None,
-              };
+              });
             },
        MultipleReplyMode::OtherRoute => {
            for i in 1..route.len() {
              let errorid = self.gen.gen();
-             let rroute = TunnelWriterFull(self.tunrep.new_writer_no_reply_with_route(&self.routeprov.new_reply_route(route[i])));
-              MultiErrorInfo {
+             let rroute = self.tunrep.new_writer_with_route(&self.routeprov.new_reply_route(route[i]));
+              res.push(MultiErrorInfo {
                 error_handle : MultipleErrorInfo::Route(errorid),
                 replyroute : Some((self.lim.clone(), Box::new(rroute))),
-              };
+              });
            }
        },
   //fn new_writer_no_reply (&mut self, &Self::P) -> Self::TW; of TunnelNoRep : include TunnelNoRep
@@ -157,28 +154,28 @@ impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=T
          revroute.reverse();
            for i in 1..l {
              let errorid = self.gen.gen();
-              res[i] = if self.mintunlength > l - i {
+              res.push(if self.mintunlength > l - i {
                MultiErrorInfo {
                  error_handle : MultipleErrorInfo::NoHandling,
                  replyroute : None,
                }
               } else {
-                let rroute = TunnelWriterFull(self.tunrep.new_writer_no_reply_with_route(&revroute[i..]));
+                let rroute = self.tunrep.new_writer_with_route(&revroute[i..]);
                 MultiErrorInfo {
                  error_handle : MultipleErrorInfo::Route(errorid),
                  replyroute : Some((self.lim.clone(), Box::new(rroute))),
                 }
-              };
+              });
            }
        },
        MultipleReplyMode::CachedRoute => 
             for i in 1..route.len() {
              let errorid = self.gen.gen();
               // write error code
-              res[i] = MultiErrorInfo {
+              res.push(MultiErrorInfo {
                 error_handle : MultipleErrorInfo::CachedRoute(errorid),
                 replyroute : None,
-              };
+              });
            },
      }
  
@@ -220,6 +217,22 @@ impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, TNR : TunnelNoRep<P=P,TW=T
 
 */
     res
+  }
+}
+
+/// specific provider for no error
+pub struct NoErrorProvider;
+
+impl<P : Peer, E : ExtWrite,TW : TunnelWriterExt> ErrorProvider<P, MultiErrorInfo<E,TW>> for NoErrorProvider {
+  fn new_error_route (&mut self, p : &[&P]) -> Vec<MultiErrorInfo<E,TW>> {
+    let mut r = Vec::with_capacity(p.len());
+    for _ in 0..p.len() {
+      r.push(MultiErrorInfo {
+        error_handle : MultipleErrorInfo::NoHandling,
+        replyroute : None,
+      });
+    }
+    r
   }
 }
 

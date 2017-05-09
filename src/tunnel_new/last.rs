@@ -106,11 +106,11 @@ impl TunnelWriter for Last {
     unimplemented!()
   }
   #[inline]
-  fn write_tunnel_header<W : Write>(&mut self, _ : &mut W) -> Result<()> {
+  fn write_dest_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {
     unimplemented!()
   }
   #[inline]
-  fn write_simkeys_into< W : Write>( &mut self, _ : &mut W) -> Result<()> {
+  fn write_tunnel_header<W : Write>(&mut self, _ : &mut W) -> Result<()> {
     unimplemented!()
   }
   #[inline]

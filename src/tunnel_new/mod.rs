@@ -68,9 +68,11 @@ pub mod last;
 
 /// Required payload to communicate : to reply or return error
 pub trait Info {
-  /// for each peer
+  /// for each peer info to proxy
   fn write_in_header<W : Write>(&mut self, w : &mut W) -> Result<()>;
-  /// for dest
+  /// info to open it for dest if not cached
+  fn write_read_info<W : Write>(&mut self, w : &mut W) -> Result<()>;
+  /// additional writing after frame (clear bytes)
   fn write_after<W : Write>(&mut self, w : &mut W) -> Result<()>;
 }
 
@@ -132,7 +134,7 @@ pub trait TunnelNoRep {
   /// same for sym info
   fn new_reader (&mut self, &Self::P) -> Self::TR;
   fn new_tunnel_writer (&mut self, &Self::P) -> Self::TW;
-  fn new_writer (&mut self, p : &Self::P) -> Self::W;
+  fn new_writer (&mut self, &Self::P) -> Self::W;
   fn new_tunnel_writer_with_route (&mut self, &[&Self::P]) -> Self::TW;
   fn new_writer_with_route (&mut self, &[&Self::P]) -> Self::W;
 

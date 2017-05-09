@@ -136,7 +136,14 @@ impl<E : ExtWrite, P : Peer,TW : TunnelWriterExt> Info for ReplyInfo<E,P,TW> {
     Ok(())
   }
 
+  fn write_read_info<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    if let MultipleReplyInfo::Route(ref k) = self.info {
+      try!(bin_encode(k, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    }
+    Ok(())
+  }
   fn write_after<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    // for dest in route and route other mode
     match self.replyroute {
       Some((ref mut limiter ,ref mut rr)) => {
         {

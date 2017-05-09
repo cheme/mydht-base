@@ -49,6 +49,10 @@ impl Info for Nope {
     Ok(())
   }
   #[inline]
+  fn write_read_info<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    Ok(())
+  }
+  #[inline]
   fn write_after<W : Write>(&mut self, w : &mut W) -> Result<()> {
     Ok(())
   }

@@ -80,6 +80,14 @@ impl<E : ExtWrite,TW : TunnelWriterExt> Info for MultiErrorInfo<E,TW> {
     Ok(())
   }
 
+  fn write_read_info<W : Write>(&mut self, inw : &mut W) -> Result<()> {
+    if let MultipleErrorInfo::Route(k) = self.error_handle {
+      // TODO write usize without bencode
+      try!(bin_encode(&k, inw, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    }
+    Ok(())
+  }
+
   fn write_after<W : Write>(&mut self, w : &mut W) -> Result<()> {
     match self.replyroute {
       Some((ref mut limiter ,ref mut rr)) => {

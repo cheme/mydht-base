@@ -18,9 +18,12 @@ use super::{
   TunnelWriter,
   TunnelNoRep,
   TunnelWriterExt,
+  TunnelReaderExt,
   TunnelCache,
   TunnelErrorWriter,
   TunnelReader,
+  TunnelReaderNoRep,
+  TunnelReaderError,
   Info,
   RepInfo,
   SymProvider,
@@ -53,11 +56,21 @@ impl Info for Nope {
     Ok(())
   }
   #[inline]
-  fn write_after<W : Write>(&mut self, w : &mut W) -> Result<()> {
+  fn read_from_header<R : Read>(r : &mut R) -> Result<Self> {
+    Ok(Nope)
+  }
+  #[inline]
+  fn read_read_info<R : Read>(&mut self, r : &mut R) -> Result<()> {
     Ok(())
   }
+
 }
 impl RepInfo for Nope {
+
+  #[inline]
+  fn require_additional_payload(&self) -> bool {
+    false
+  }
   #[inline]
   fn do_cache (&self) -> bool {
     false
@@ -152,11 +165,25 @@ impl TunnelErrorWriter for Nope {
     Ok(())
   }
 }
-impl TunnelReader for Nope {
+impl TunnelReaderNoRep for Nope {
+  fn read_state<R : Read> (&mut self, _ : &mut R) -> Result<()> {
+    Ok(())
+  }
+  fn read_connect_info<R : Read>(&mut self, _ : &mut R) -> Result<()> {
+    Ok(())
+  }
+  fn read_tunnel_header<R : Read>(&mut self, _ : &mut R) -> Result<()> {
+    Ok(())
+  }
+
+  fn read_dest_info<R : Read>(&mut self, _ : &mut R) -> Result<()> {
+    Ok(())
+  }
+ 
 }
 
 impl<SSW,SSR> TunnelCache<SSW,SSR> for Nope {
-  fn put_symw_tunnel(&mut self, _ : SSW, _ : Vec<u8>) -> Result<()> {
+  fn put_symw_tunnel(&mut self, _ : &[u8], _ : SSW) -> Result<()> {
     // TODO replace with actual erro
     unimplemented!()
   }
@@ -219,4 +246,32 @@ impl<P : Peer, RI : RepInfo,SSW,SSR> ReplyProvider<P,RI,SSW,SSR> for Nope {
     panic!("Placeholder, should not be called");
   }
 }
-
+impl TunnelReaderExt for Nope {
+  type TR = Nope; 
+  /// retrieve original inner writer
+  fn get_reader(self) -> Self::TR {
+    self
+  }
+}
+pub struct TunnelNope<P : Peer> (PhantomData<(P)>);
+impl<P : Peer> TunnelNope<P> {
+  pub fn new() -> Self {
+    TunnelNope(PhantomData)
+  }
+}
+impl<P : Peer> TunnelNoRep for TunnelNope<P> {
+  type P = P;
+  type TW = Nope;
+  type W = Nope;
+  type TR = Nope;
+  type PTW = Nope;
+  type PW = Nope;
+  type DR = Nope;
+  fn new_reader (&mut self) -> Self::TR { Nope }
+  fn new_tunnel_writer (&mut self, _ : &Self::P) -> Self::TW {Nope}
+  fn new_writer (&mut self, _ : &Self::P) -> Self::W {Nope}
+  fn new_tunnel_writer_with_route (&mut self, _ : &[&Self::P]) -> Self::TW {Nope}
+  fn new_writer_with_route (&mut self, _ : &[&Self::P]) -> Self::W {Nope}
+  fn new_proxy_writer (&mut self, _ : Self::TR) -> Result<Self::PTW> {Ok(Nope)}
+  fn new_dest_reader (&mut self, _ : Self::TR) -> Result<Self::DR> {Ok(Nope)}
+}

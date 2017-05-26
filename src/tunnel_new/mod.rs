@@ -1,6 +1,6 @@
-
+//! TODO ErrorInfo and ReplyInfo abstraction useless??
+//! TODO review all unwrap as most should only return an error, and program could fail very easilly
 use rustc_serialize::{Encodable, Decodable};
-
 use std::fmt;
 use std::marker::PhantomData;
 use rand::thread_rng;
@@ -67,13 +67,15 @@ pub mod full;
 pub mod last;
 
 /// Required payload to communicate : to reply or return error
-pub trait Info {
+pub trait Info : Sized {
   /// for each peer info to proxy
   fn write_in_header<W : Write>(&mut self, w : &mut W) -> Result<()>;
   /// info to open it for dest if not cached
   fn write_read_info<W : Write>(&mut self, w : &mut W) -> Result<()>;
-  /// additional writing after frame (clear bytes)
-  fn write_after<W : Write>(&mut self, w : &mut W) -> Result<()>;
+  /// for each peer read from header
+  fn read_from_header<R : Read>(r : &mut R) -> Result<Self>;
+  fn read_read_info<R : Read>(&mut self, r : &mut R) -> Result<()>;
+
 }
 
 pub trait RepInfo : Info {
@@ -83,6 +85,8 @@ pub trait RepInfo : Info {
   fn do_cache (&self) -> bool;
 
   fn get_reply_key(&self) -> Option<&Vec<u8>>;
+  /// additional writing after content (clear bytes), related to routing scheme
+  fn require_additional_payload(&self) -> bool;
 }
 
 /// Route Provider
@@ -117,6 +121,13 @@ pub trait TunnelWriterExt : ExtWrite {
   /// Get inner writer
   fn get_writer(&mut self) -> &mut Self::TW;
 }
+
+pub trait TunnelReaderExt : ExtRead {
+  type TR; 
+  /// retrieve original inner writer
+  fn get_reader(self) -> Self::TR;
+}
+
 /// Tunnel trait could be in a single tunnel impl, but we use multiple to separate concerns a bit
 /// When a tunnel implement multiple trait it has property of all trait ('new_writer' of a
 /// TunnelNoRep if Tunnel trait is also implemented will write necessary info for reply).
@@ -128,20 +139,30 @@ pub trait TunnelNoRep {
   /// actual writer (tunnel logic using tunnel writer)
   type W : TunnelWriterExt<TW=Self::TW>;
   // reader must read all three kind of message
-  type TR : TunnelReader;
+  type TR : TunnelReaderNoRep;
 
+  /// TunnelProxy
+  type PTW : TunnelWriter + TunnelReaderExt<TR=Self::TR>;
+  /// actual proxy writer : TODO rem like W : directly return writer default impl when stabilized
+  type PW : TunnelWriterExt<TW=Self::PTW>;
+  /// Dest reader
+  type DR : TunnelReaderExt<TR=Self::TR>;
   /// could return a writer allowing reply but not mandatory
   /// same for sym info
-  fn new_reader (&mut self, &Self::P) -> Self::TR;
+  fn new_reader (&mut self) -> Self::TR;
   fn new_tunnel_writer (&mut self, &Self::P) -> Self::TW;
   fn new_writer (&mut self, &Self::P) -> Self::W;
+  // TODO rewrite with Iterator (some bad code due to bad proto)
   fn new_tunnel_writer_with_route (&mut self, &[&Self::P]) -> Self::TW;
+  // TODO rewrite with Iterator
   fn new_writer_with_route (&mut self, &[&Self::P]) -> Self::W;
+  fn new_proxy_writer (&mut self, Self::TR) -> Result<Self::PTW>;
+  fn new_dest_reader (&mut self, Self::TR) -> Result<Self::DR>;
 
 }
 
 /// tunnel with reply
-pub trait Tunnel : TunnelNoRep {
+pub trait Tunnel : TunnelNoRep where Self::TR : TunnelReader<RI=Self::RI> {
   // reply info info needed to established conn
   type RI : Info;
   type RTW : TunnelWriter;
@@ -149,7 +170,7 @@ pub trait Tunnel : TunnelNoRep {
 }
 
 /// tunnel with reply
-pub trait TunnelError : TunnelNoRep {
+pub trait TunnelError : TunnelNoRep where Self::TR : TunnelReaderError<EI=Self::EI> {
   // error info info needed to established conn
   type EI : Info;
   /// TODO not a 
@@ -159,25 +180,29 @@ pub trait TunnelError : TunnelNoRep {
 
 }
 /// Tunnel which allow caching, and thus establishing connections
-pub trait TunnelManager : Tunnel where Self::RI : RepInfo {
+/// TODO understand need for where condition
+pub trait TunnelManager : Tunnel where Self::RI : RepInfo,
+Self::TR : TunnelReader<RI=Self::RI>
+{
   // Shadow Sym (if established con)
   type SSCW : ExtWrite;
-  // Shadow Sym (if established con)
+  // Shadow Sym (if established con) aka destread
   type SSCR : ExtRead;
 
-  fn put_symw(&mut self, Self::SSCW, Vec<u8>) -> Result<()>;
+  fn put_symw(&mut self, &[u8], Self::SSCW) -> Result<()>;
 
-  fn get_symw(&mut self, &[u8]) -> Result<&mut Self::SSCW>;
+  fn get_symw(&mut self, &[u8]) -> Result<Self::SSCW>;
 
   fn put_symr(&mut self, Self::SSCR) -> Result<Vec<u8>>;
 
-  fn get_symr(&mut self, &[u8]) -> Result<&mut Self::SSCR>;
+  fn get_symr(&mut self, &[u8]) -> Result<Self::SSCR>;
 
   fn use_sym_exchange (&Self::RI) -> bool;
 
-  fn new_sym_writer (&mut self, Vec<u8>, &Self::P) -> Self::SSCW;
+  // first vec is sym key, second is cache id of previous peer
+  fn new_sym_writer (&mut self, Vec<u8>, Vec<u8>) -> Self::SSCW;
 
-  fn new_sym_reader (&mut self, Vec<Vec<u8>>) -> Self::SSCR;
+  fn new_dest_sym_reader (&mut self, Vec<Vec<u8>>) -> Self::SSCR;
 
   fn new_cache_id (&mut self) -> Vec<u8>;
 
@@ -202,14 +227,13 @@ pub trait TunnelWriter {
 
   /// write connection info, currently use for caching of previous peer connection id (no encrypt
   /// on it). This is done at a between peers level (independant to tunnel)
+  /// This is not shadowed, but  TODO consider fusion with write_state
   fn write_connect_info<W : Write>(&mut self, &mut W) -> Result<()>;
 
-  /// write headers (probably layered one) 
+  /// write headers (probably layered one), and infos (RI, EI, PI) 
   fn write_tunnel_header<W : Write>(&mut self, w : &mut W) -> Result<()>;
 
-  /// write after the tunnel (more additional info)
-  /// Warning implementation should probably write shadowed
-  /// TODO rename to something more neutral like write dest reply (reply write is for hop)
+  /// write into the tunnel (for dest only)
   fn write_dest_info<W : Write>(&mut self, &mut W) -> Result<()>; 
 
   /// ExtWrite write into
@@ -226,8 +250,28 @@ pub trait TunnelWriter {
  
 }
 
-pub trait TunnelReader {
+
+pub trait TunnelReaderNoRep : ExtRead {
+
+
+  fn read_state<R : Read> (&mut self, r : &mut R) -> Result<()>;
+  fn read_connect_info<R : Read>(&mut self, &mut R) -> Result<()>;
+  fn read_tunnel_header<R : Read>(&mut self, &mut R) -> Result<()>;
+  fn read_dest_info<R : Read>(&mut self, &mut R) -> Result<()>;
 }
+
+pub trait TunnelReaderError : TunnelReaderNoRep {
+  type EI;
+  fn get_current_error_info(&self) -> Option<&Self::EI>;
+}
+
+pub trait TunnelReader : TunnelReaderNoRep {
+  type RI;
+  fn get_current_reply_info(&self) -> Option<&Self::RI>;
+}
+
+
+
 /* ??? useless???
 pub type TunnelWriterComp<
   'a, 
@@ -260,7 +304,7 @@ impl From<BindErr> for IoError {
 /// key
 /// IOresult is used but only for the sake of lazyness (TODO)
 pub trait TunnelCache<SSW,SSR> {
-  fn put_symw_tunnel(&mut self, SSW, Vec<u8>) -> Result<()>;
+  fn put_symw_tunnel(&mut self, &[u8], SSW) -> Result<()>;
   fn get_symw_tunnel(&mut self, &[u8]) -> Result<&mut SSW>;
   fn has_symw_tunnel(&mut self, k : &[u8]) -> bool {
     self.get_symw_tunnel(k).is_ok()

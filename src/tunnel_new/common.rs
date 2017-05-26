@@ -35,6 +35,14 @@ impl TunnelState {
       _ => false,
     }
   }
+  pub fn from_cache(&self) -> bool {
+    match self {
+      &TunnelState ::ReplyCached 
+      | &TunnelState::QErrorCached => true,
+      _ => false,
+    }
+  }
+ 
   pub fn add_sim_key(&self) -> bool {
     match self {
       // add key

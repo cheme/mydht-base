@@ -5,6 +5,7 @@
 use std::marker::PhantomData;
 use super::super::{
   BincErr,
+  BindErr,
   RepInfo,
   Info,
   TunnelWriter,
@@ -19,11 +20,13 @@ use super::super::full::TunnelWriterFull;
 use bincode::SizeLimit;
 use bincode::rustc_serialize::{
   encode_into as bin_encode, 
+  decode_from as bin_decode, 
 };
 use keyval::KeyVal;
 use peer::Peer;
 use std::io::{
   Write,
+  Read,
   Result,
 };
 use readwrite_comp::{
@@ -76,44 +79,25 @@ pub enum MultipleReplyInfo<P : Peer> {
 }
 
 
-impl<P : Peer> MultipleReplyInfo<P> {
-  pub fn do_cache(&self) -> bool {
-    match self {
-      &MultipleReplyInfo::CachedRoute(_) => true,
-      _ => false,
-    }
-  }
-
-  pub fn write_in_header<W : Write>(&mut self, inw : &mut W) -> Result<()> {
-    try!(bin_encode(self, inw, SizeLimit::Infinite).map_err(|e|BincErr(e)));
-    Ok(())
-  }
-  pub fn write_after<W : Write>(&mut self, inw : &mut W) -> Result<()> {
-    Ok(())
-  }
-
-}
-
-
-/// TODO implement Info
-/// TODO next split it (here it is MultiReply whichi is previous enum impl, purpose of refacto is
-/// getting rid of those enum (only if needed)
-/// TODO get TunnelProxy info next_proxy_peer and tunnel id as PeerInfo and not reply info (after full running)
-/// TODO for perf sake should be an enum (at least with the noreply : except for cache impl those
-/// ar null (too bug in tunnelshadoww) : the double option is not a good sign too
-pub struct ReplyInfo<E : ExtWrite, P : Peer, TW : TunnelWriterExt> {
+// TODO implement Info
+// TODO next split it (here it is MultiReply whichi is previous enum impl, purpose of refacto is
+// getting rid of those enum (only if needed)
+// TODO get TunnelProxy info next_proxy_peer and tunnel id as PeerInfo and not reply info (after full running)
+// TODO for perf sake should be an enum (at least with the noreply : except for cache impl those
+// ar null (too bug in tunnelshadoww) : the double option is not a good sign too
+/*pub struct MultipleReplyInfo<E : ExtWrite, P : Peer, TW : TunnelWriterExt> {
   pub info : MultipleReplyInfo<P>,
   // reply route should be seen as a reply info : used to write the payload -> TODO redesign this
   // TODO not TunnelWriterFull in box to share with last
   pub replyroute : Option<(E,Box<TW>)>,
   //replyroute : Option<Box<(E,TunnelWriterFull<E,P,TW>)>>,
-}
+}*/
 
-impl<E : ExtWrite, P : Peer,TW : TunnelWriterExt> Info for ReplyInfo<E,P,TW> {
+impl<P : Peer> Info for MultipleReplyInfo<P> {
   
 
   fn write_in_header<W : Write>(&mut self, inw : &mut W) -> Result<()> {
-    try!(bin_encode(&self.info, inw, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    bin_encode(self, inw, SizeLimit::Infinite).map_err(|e|BincErr(e))?;
 
 //    if self.info.do_cache() { 
 
@@ -137,44 +121,47 @@ impl<E : ExtWrite, P : Peer,TW : TunnelWriterExt> Info for ReplyInfo<E,P,TW> {
   }
 
   fn write_read_info<W : Write>(&mut self, w : &mut W) -> Result<()> {
-    if let MultipleReplyInfo::Route(ref k) = self.info {
-      try!(bin_encode(k, w, SizeLimit::Infinite).map_err(|e|BincErr(e)));
+    if let &mut MultipleReplyInfo::Route(ref k) = self {
+      bin_encode(k, w, SizeLimit::Infinite).map_err(|e|BincErr(e))?;
     }
     Ok(())
   }
-  fn write_after<W : Write>(&mut self, w : &mut W) -> Result<()> {
-    // for dest in route and route other mode
-    match self.replyroute {
-      Some((ref mut limiter ,ref mut rr)) => {
-        {
-          let mut inw  = CompExtWInner(w,limiter);
-          // write header (simkey are include in headers) (contains dest info)
-          try!(rr.write_header(&mut inw));
-          // Nothing to write, mul key to read are in end of write header of ReplyOnce
+  fn read_from_header<R : Read>(r : &mut R) -> Result<Self> {
+    Ok(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e))?)
+  }
 
-          try!(rr.write_end(&mut inw));
-        }
-        try!(limiter.write_end(w));
-        try!(limiter.flush_into(w));
-      }
-      None => ()
+  fn read_read_info<R : Read>(&mut self, r : &mut R) -> Result<()> {
+    // as dest this is called multiple times and thus we redifine it
+    if let &mut MultipleReplyInfo::Route(ref mut k) = self {
+       *k = bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e))?;
     }
     Ok(())
   }
+
 }
 
-impl<E : ExtWrite, P : Peer,TW : TunnelWriterExt> RepInfo for ReplyInfo<E,P,TW> {
+impl<P : Peer> RepInfo for MultipleReplyInfo<P> {
+  #[inline]
+  fn require_additional_payload(&self) -> bool {
+    if let &MultipleReplyInfo::Route(_) = self { true } else {false}
+  }
+
 
   /// TODO consider remove
   #[inline]
   fn do_cache (&self) -> bool {
-    self.info.do_cache()
+    match self {
+      &MultipleReplyInfo::CachedRoute(_) => true,
+      _ => false,
+    }
+
   }
 
   /// TODO remove called once
   fn get_reply_key(&self) -> Option<&Vec<u8>> {
-    match self.info {
-      MultipleReplyInfo::Route(ref k) => Some(k),
+    match self {
+      &MultipleReplyInfo::Route(ref k) => Some(k),
+      &MultipleReplyInfo::CachedRoute(ref k) => Some(k),
       _ => None,
     }
   }
@@ -182,18 +169,16 @@ impl<E : ExtWrite, P : Peer,TW : TunnelWriterExt> RepInfo for ReplyInfo<E,P,TW> 
 }
 
 /// TODO E as explicit limiter named trait for readability
-pub struct ReplyInfoProvider<E : ExtWrite + Clone, TNR : TunnelNoRep,SSW,SSR, SP : SymProvider<SSW,SSR,TNR::P>, RP : RouteProvider<TNR::P>> {
+pub struct ReplyInfoProvider<P : Peer, SSW,SSR, SP : SymProvider<SSW,SSR,P>, RP : RouteProvider<P>> {
   pub mode : MultipleReplyMode,
-  pub lim : E,
-  pub tunrep : TNR,
   // for different reply route
   pub symprov : SP,
   pub routeprov : RP,
-  pub _p : PhantomData<(SSW,SSR)>,
+  pub _p : PhantomData<(P,SSW,SSR)>,
 }
 
 /// TODO macro inherit??
-impl<E : ExtWrite + Clone,P : Peer, TNR : TunnelNoRep<P=P>,SSW,SSR,SP : SymProvider<SSW,SSR,P>,RP : RouteProvider<P>> SymProvider<SSW,SSR,P> for ReplyInfoProvider<E,TNR,SSW,SSR,SP,RP> {
+impl<P : Peer, SSW,SSR,SP : SymProvider<SSW,SSR,P>,RP : RouteProvider<P>> SymProvider<SSW,SSR,P> for ReplyInfoProvider<P,SSW,SSR,SP,RP> {
 
   #[inline]
   fn new_sym_key (&mut self, p : &P) -> Vec<u8> {
@@ -210,75 +195,40 @@ impl<E : ExtWrite + Clone,P : Peer, TNR : TunnelNoRep<P=P>,SSW,SSR,SP : SymProvi
 
 }
 
-impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, W : TunnelWriterExt<TW=TW>, TNR : TunnelNoRep<P=P,W=W,TW=TW>,SSW,SSR,SP : SymProvider<SSW,SSR,P>,RP : RouteProvider<P>> ReplyProvider<P, ReplyInfo<E,P,W>,SSW,SSR> for ReplyInfoProvider<E,TNR,SSW,SSR,SP,RP> {
+impl<P : Peer,SSW,SSR,SP : SymProvider<SSW,SSR,P>,RP : RouteProvider<P>> ReplyProvider<P, MultipleReplyInfo<P>,SSW,SSR> for ReplyInfoProvider<P,SSW,SSR,SP,RP> {
 
   /// Error infos bases for peers
-  fn new_reply (&mut self, route : &[&P]) -> Vec<ReplyInfo<E,P,W>> {
-     let mut res : Vec<ReplyInfo<E,P,W>> = Vec::with_capacity(route.len()-1);
+  fn new_reply (&mut self, route : &[&P]) -> Vec<MultipleReplyInfo<P>> {
      let l = route.len();
      match self.mode {
-       MultipleReplyMode::NoHandling => 
-           for i in 1..l {
-              res.push(ReplyInfo {
-                info : MultipleReplyInfo::NoHandling,
-                replyroute : None,
-              })
-           },
+       MultipleReplyMode::NoHandling => vec![MultipleReplyInfo::NoHandling;l-1],
        MultipleReplyMode::KnownDest => {
-           for i in 1..l - 1 {
-              res.push(ReplyInfo {
-                info : MultipleReplyInfo::NoHandling,
-                replyroute : None,
-              })
-           };
-           res.push(ReplyInfo {
-                info : MultipleReplyInfo::KnownDest(route[0].get_key()),
-                replyroute : None,
-           });
+         let mut res = vec![MultipleReplyInfo::NoHandling;route.len()-1];
+         res[l-1] = MultipleReplyInfo::KnownDest(route[0].get_key());
+         res
        },
        MultipleReplyMode::OtherRoute => {
-           for i in 1..l - 1 {
-              res.push(ReplyInfo {
-                info : MultipleReplyInfo::Route(self.new_sym_key(route[i])),
-                replyroute : None,
-              })
-           };
-          let rroute = self.tunrep.new_writer_with_route(&self.routeprov.new_reply_route(route[l-1]));
-          res.push(ReplyInfo {
-            info : MultipleReplyInfo::Route(self.new_sym_key(route[l-1])),
-            replyroute : Some((self.lim.clone(), Box::new(rroute))),
-          });
+         let mut res = vec![MultipleReplyInfo::NoHandling;route.len()-1];
+         res[l-1] = MultipleReplyInfo::Route(self.new_sym_key(route[l-1]));
+         res
        },
   //fn new_writer_no_reply (&mut self, &Self::P) -> Self::W; of TunnelNoRep : include TunnelNoRep
   //and a clonable limiter in mulerrorprovider
        MultipleReplyMode::Route => {
-           for i in 1..l - 1 {
-              res.push(ReplyInfo {
-                info : MultipleReplyInfo::Route(self.new_sym_key(route[i])),
-                replyroute : None,
-              })
-           };
-
-         let mut revroute = Vec::from(route);
-         // reverse route to get a reply route
-         revroute.reverse();
-         // TODO remove ref to tunnelwriterfull (cf error.rs)
-         let rroute = self.tunrep.new_writer_with_route(&revroute[..]);
-           res.push(ReplyInfo {
-                 info : MultipleReplyInfo::Route(self.new_sym_key(route[l-1])),
-                 replyroute : Some((self.lim.clone(), Box::new(rroute))),
-              });
+         let mut res : Vec<MultipleReplyInfo<P>> = Vec::with_capacity(l-1);
+         for i in 1..l {
+           res.push(MultipleReplyInfo::Route(self.new_sym_key(route[i])))
+         }
+         res
        },
-       MultipleReplyMode::CachedRoute => 
-            for i in 1..route.len() {
-              // write error code
-              res.push(ReplyInfo {
-                info : MultipleReplyInfo::CachedRoute(self.new_sym_key(route[i])),
-                replyroute : None,
-              });
-           },
+       MultipleReplyMode::CachedRoute => {
+         let mut res : Vec<MultipleReplyInfo<P>> = Vec::with_capacity(l-1);
+         for i in 1..l {
+           res.push(MultipleReplyInfo::CachedRoute(self.new_sym_key(route[i])))
+         }
+         res
+       },
      }
- 
 /*  pub fn errhandling_infos<P : Peer>(&self, route : &[(usize,&P)], error_route : Option<&[(usize,&P)]>) -> Vec<ErrorHandlingInfo<P>> {
      // dest err handling is used as a possible ack (val)
      let mut res = vec![ErrorHandlingInfo::NoHandling; route.len()];
@@ -316,23 +266,16 @@ impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, W : TunnelWriterExt<TW=TW>
   }
 
 */
-     res
   }
 }
 
 /// specific provider for no rpe
 pub struct NoMultiRepProvider;
 
-impl<P : Peer, E : ExtWrite,TW : TunnelWriterExt, SSW,SSR> ReplyProvider<P, ReplyInfo<E,P,TW>,SSW,SSR> for NoMultiRepProvider {
-  fn new_reply (&mut self, p : &[&P]) -> Vec<ReplyInfo<E,P,TW>> {
-    let mut r = Vec::with_capacity(p.len());
-    for _ in 0..p.len() {
-      r.push(ReplyInfo {
-        info : MultipleReplyInfo::NoHandling,
-        replyroute : None,
-      });
-    }
-    r
+impl<P : Peer,SSW,SSR> ReplyProvider<P, MultipleReplyInfo<P>,SSW,SSR> for NoMultiRepProvider {
+  #[inline]
+  fn new_reply (&mut self, p : &[&P]) -> Vec<MultipleReplyInfo<P>> {
+    vec![MultipleReplyInfo::NoHandling;p.len()-1]
   }
 }
 impl<P : Peer, SSW,SSR> SymProvider<SSW,SSR,P> for NoMultiRepProvider {

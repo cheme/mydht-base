@@ -62,7 +62,8 @@ pub enum MultipleReplyMode {
   /// route for error is included, end of payload should be proxyied, different route is use
   /// Same as bitunnel from original implementation
   OtherRoute,
-  // TODO bitunnel route
+  /// Mode for reply payload (use by Route and OtherRoute)
+  RouteReply,
   // if route is cached (info in local cache), report error with same route  CachedRoute,
   CachedRoute,
 }
@@ -75,6 +76,8 @@ pub enum MultipleReplyInfo<P : Peer> {
   NoHandling,
   KnownDest(<P as KeyVal>::Key), // TODO add reply mode ??
   Route(Vec<u8>), // route headers are to be read afterward, contains sym key
+  /// reply info include in route after content
+  RouteReply(Vec<u8>), // route headers are to be read afterward, contains sym key
   CachedRoute(Vec<u8>), // contains symkey for peer shadow
 }
 
@@ -121,7 +124,7 @@ impl<P : Peer> Info for MultipleReplyInfo<P> {
   }
 
   fn write_read_info<W : Write>(&mut self, w : &mut W) -> Result<()> {
-    if let &mut MultipleReplyInfo::Route(ref k) = self {
+    if let &mut MultipleReplyInfo::RouteReply(ref k) = self {
       bin_encode(k, w, SizeLimit::Infinite).map_err(|e|BincErr(e))?;
     }
     Ok(())
@@ -132,7 +135,7 @@ impl<P : Peer> Info for MultipleReplyInfo<P> {
 
   fn read_read_info<R : Read>(&mut self, r : &mut R) -> Result<()> {
     // as dest this is called multiple times and thus we redifine it
-    if let &mut MultipleReplyInfo::Route(ref mut k) = self {
+    if let &mut MultipleReplyInfo::RouteReply(ref mut k) = self {
        *k = bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e))?;
     }
     Ok(())
@@ -160,7 +163,7 @@ impl<P : Peer> RepInfo for MultipleReplyInfo<P> {
   /// TODO remove called once
   fn get_reply_key(&self) -> Option<&Vec<u8>> {
     match self {
-      &MultipleReplyInfo::Route(ref k) => Some(k),
+      &MultipleReplyInfo::RouteReply(ref k) => Some(k),
       &MultipleReplyInfo::CachedRoute(ref k) => Some(k),
       _ => None,
     }
@@ -212,12 +215,16 @@ impl<P : Peer,SSW,SSR,SP : SymProvider<SSW,SSR,P>,RP : RouteProvider<P>> ReplyPr
          res[l-1] = MultipleReplyInfo::Route(self.new_sym_key(route[l-1]));
          res
        },
-  //fn new_writer_no_reply (&mut self, &Self::P) -> Self::W; of TunnelNoRep : include TunnelNoRep
-  //and a clonable limiter in mulerrorprovider
        MultipleReplyMode::Route => {
+         let mut res = vec![MultipleReplyInfo::NoHandling;route.len()-1];
+         res[l-1] = MultipleReplyInfo::Route(self.new_sym_key(route[l-1]));
+         res
+       },
+
+       MultipleReplyMode::RouteReply => {
          let mut res : Vec<MultipleReplyInfo<P>> = Vec::with_capacity(l-1);
          for i in 1..l {
-           res.push(MultipleReplyInfo::Route(self.new_sym_key(route[i])))
+           res.push(MultipleReplyInfo::RouteReply(self.new_sym_key(route[i])))
          }
          res
        },

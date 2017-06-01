@@ -457,6 +457,7 @@ impl<TT : GenTunnelTraits> Full<TT> {
       MultipleReplyMode::Route => TunnelState::QueryOnce,
       MultipleReplyMode::OtherRoute => TunnelState::QueryOnce,
       MultipleReplyMode::CachedRoute => TunnelState::QueryCached,
+      MultipleReplyMode::RouteReply => TunnelState::ReplyOnce,
     }
   }
 
@@ -501,6 +502,8 @@ impl<TT : GenTunnelTraits> Full<TT> {
     shad.last_mut().map(|s|
     // set reply payload write for dest
     if s.rep.require_additional_payload() {
+      let old_mode = self.reply_mode.clone();
+      self.reply_mode = MultipleReplyMode::RouteReply;
        // a bit redundant with require
        if otherroute {
          s.replypayload = Some((self.limiter_proto_w.clone(),self.tunrep.new_writer_with_route(&self.route_prov.new_reply_route(p))));
@@ -510,6 +513,7 @@ impl<TT : GenTunnelTraits> Full<TT> {
          // same route
          s.replypayload = Some((self.limiter_proto_w.clone(),self.tunrep.new_writer_with_route(&rref[..])));
        };
+       self.reply_mode = old_mode;
     });
 
     CompExtW(MultiWExt::new(shad),self.limiter_proto_w.clone())
@@ -847,7 +851,7 @@ impl<E : ExtRead, P : Peer, RI : RepInfo, EI : Info> TunnelReaderNoRep for FullR
 
   fn read_connect_info<R : Read>(&mut self, r : &mut R) -> Result<()> {
     // reading for cached reader
-    if self.state.from_cache() {
+    if self.state.do_cache() {
       self.current_cache_id = Some(bin_decode(r, SizeLimit::Infinite).map_err(|e|BindErr(e))?);
     }
     Ok(())
@@ -931,6 +935,7 @@ impl<E : ExtRead, P : Peer, RI : RepInfo, EI : Info> ExtRead for FullR<RI,EI,P,E
     self.read_state(r)?;
     self.read_connect_info(r)?;
     self.read_tunnel_header(r)?;
+    Ok(())
 
 // TODO plus additional limiter    self.current_error_info = 
 //    self.current_reply_info = 
@@ -990,11 +995,17 @@ impl<E : ExtRead, P : Peer, RI : RepInfo, EI : Info> ExtRead for FullR<RI,EI,P,E
     self.state = tun_state;
     self.rep_key = rep_key;
     Ok(())*/
-      unimplemented!()
   }
  
   #[inline]
   fn read_from<R : Read>(&mut self, r : &mut R, buf: &mut [u8]) -> Result<usize> {
+      if self.current_reply_info.as_ref().map(|ri|ri.require_additional_payload()).unwrap_or(false) {
+        let mut inr  = CompExtRInner(r, &mut self.content_limiter);
+        self.shad.read_from(&mut inr,buf)
+      } else {
+        self.shad.read_from(r,buf)
+      }
+
 /*    if let TunnelMode::NoTunnel = self.mode {
       r.read(buf)
     } else {
@@ -1010,10 +1021,14 @@ impl<E : ExtRead, P : Peer, RI : RepInfo, EI : Info> ExtRead for FullR<RI,EI,P,E
       self.shadow.read_from(r,buf)
     }
     }*/
-    unimplemented!()
   }
   #[inline]
   fn read_end<R : Read>(&mut self, r : &mut R) -> Result<()> {
+      if self.current_reply_info.as_ref().map(|ri|ri.require_additional_payload()).unwrap_or(false) {
+        self.content_limiter.read_end(r)?;
+      }
+
+      self.shad.read_end(r)
 
 /*
     // check if some reply route
@@ -1023,7 +1038,6 @@ impl<E : ExtRead, P : Peer, RI : RepInfo, EI : Info> ExtRead for FullR<RI,EI,P,E
 
     }
     Ok(())*/
-    unimplemented!()
   }
 
 }
@@ -1064,10 +1078,25 @@ impl<P : Peer, RI : RepInfo, EI : Info,LW : ExtWrite,TW : TunnelWriterExt> ExtWr
   }
   #[inline]
   fn write_into<W : Write>(&mut self, w : &mut W, cont : &[u8]) -> Result<usize> {
+    // this enum is obviously to costy (like general enum : full should specialize for multiple
+    // writers (currently trait allow only one : so we need two different full (but still read
+    // could be single if on same channel)
+    if self.rep.require_additional_payload() {
+      let mut inw  = CompExtWInner(w, &mut self.shad);
+        if let Some((ref mut content_limiter,_)) = self.replypayload {
+          return content_limiter.write_into(&mut inw, cont);
+        }
+    }
     self.shad.write_into(w,cont)
   }   
   #[inline]
   fn flush_into<W : Write>(&mut self, w : &mut W) -> Result<()> {
+    if self.rep.require_additional_payload() {
+      let mut inw  = CompExtWInner(w, &mut self.shad);
+        if let Some((ref mut content_limiter,_)) = self.replypayload {
+          return content_limiter.flush_into(&mut inw);
+        }
+    }
     self.shad.flush_into(w)
   }
   #[inline]
@@ -1213,7 +1242,7 @@ impl<OR : ExtRead,SW : ExtWrite, E : ExtWrite,LR : ExtRead> TunnelWriter for Pro
 
   fn write_connect_info<W : Write>(&mut self, w : &mut W) -> Result<()> {
     match self.kind {
-      ProxyFullKind::ReplyCached(_,_) => (), // TODO might need RI and Error Info or disable reading it in FullR -> thus required storing ri and ei : currently only next peer address ~ ri TODO this won currently run need refactor cache to contain ri and ei (need to be added by query once ...). For a starter no error and disable reading might be clearer. 
+      ProxyFullKind::ReplyCached(_,_) => (), // key is in internal header impl (in extwrite trait : write_connect_info does not make sense)
       ProxyFullKind::QueryOnce(_,_) => (),
       ProxyFullKind::ReplyOnce(_,_,_,_,_,_) => (),
       ProxyFullKind::QueryCached(ref k,_) =>

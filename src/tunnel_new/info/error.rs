@@ -15,7 +15,6 @@ use super::super::{
   TunnelNoRep,
 };
 /// wrong use need redesign TODO redesign it on specific trait (not TW as param)
-use super::super::full::TunnelWriterFull;
 use bincode::SizeLimit;
 use bincode::rustc_serialize::{
   encode_into as bin_encode, 
@@ -117,7 +116,7 @@ pub struct MulErrorProvider<E : ExtWrite + Clone, TNR : TunnelNoRep, RP : RouteP
   //type TR : TunnelReader;
 
 
-impl<E : ExtWrite + Clone,P : Peer,TW : TunnelWriter, W : TunnelWriterExt<TW=TW>, TNR : TunnelNoRep<P=P,W=W,TW=TW>,RP : RouteProvider<P>> ErrorProvider<P, MultipleErrorInfo> for MulErrorProvider<E,TNR,RP> {
+impl<E : ExtWrite + Clone,P : Peer, W : TunnelWriterExt, TNR : TunnelNoRep<P=P,W=W>,RP : RouteProvider<P>> ErrorProvider<P, MultipleErrorInfo> for MulErrorProvider<E,TNR,RP> {
   /// Error infos bases for peers
   fn new_error_route (&mut self, route : &[&P]) -> Vec<MultipleErrorInfo> {
 

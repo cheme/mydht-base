@@ -9,6 +9,7 @@
 pub enum TunnelState {
   // TODO bitunnel need a ReplyCached with sim_key ??? replace actual replycached by SendOnCache
   /// NoTunnel, same as TunnelMode::NoTunnel (TODO remove TunnelMode::NoTunnel when stable)
+  /// TODO redefine to Undefined
   TunnelState,
   /// query with all info to establish route (and reply), no local proxy cache
   QueryOnce,

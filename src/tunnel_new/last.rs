@@ -97,39 +97,6 @@ impl ExtRead for Last {
 
 
 impl TunnelWriter for Last {
-  #[inline]
-  fn write_state<W : Write>(&mut self, _ : &mut W) -> Result<()> {
-    unimplemented!()
-  }
-  #[inline]
-  fn write_connect_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {
-    unimplemented!()
-  }
-  #[inline]
-  fn write_dest_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {
-    unimplemented!()
-  }
-  #[inline]
-  fn write_tunnel_header<W : Write>(&mut self, _ : &mut W) -> Result<()> {
-    unimplemented!()
-  }
-  #[inline]
-  fn write_tunnel_into<W : Write>(&mut self, w : &mut W, cont : &[u8]) -> Result<usize> {
-    unimplemented!()
-  }
-  #[inline]
-  fn write_tunnel_all_into<W : Write>(&mut self, w : &mut W, cont : &[u8]) -> Result<()> {
-    unimplemented!()
-  }
-  #[inline]
-  fn flush_tunnel_into<W : Write>(&mut self, _ : &mut W) -> Result<()> {
-    unimplemented!()
-  }
-  #[inline]
-  fn write_tunnel_end<W : Write>(&mut self, _ : &mut W) -> Result<()> {
-    unimplemented!()
-  }
-
 
 }
 

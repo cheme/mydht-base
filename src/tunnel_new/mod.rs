@@ -117,9 +117,9 @@ pub trait ReplyProvider<P : Peer, RI : RepInfo,SSW,SSR> : SymProvider<SSW,SSR,P>
 
 /// ExtWrite implementation of a TunnelWriter
 pub trait TunnelWriterExt : ExtWrite {
-  type TW : TunnelWriter;
-  /// Get inner writer
-  fn get_writer(&mut self) -> &mut Self::TW;
+
+  // info only for dest (if needed to read)
+  fn write_dest_info<W : Write>(&mut self, w : &mut W) -> Result<()>;
 }
 
 pub trait TunnelReaderExt : ExtRead {
@@ -134,29 +134,22 @@ pub trait TunnelReaderExt : ExtRead {
 pub trait TunnelNoRep {
   /// Peer with their address and their asym shadow scheme
   type P : Peer;
-  /// Tunnel writer implementation (see trait : serialization or content oriented)
-  type TW : TunnelWriter;
   /// actual writer (tunnel logic using tunnel writer)
-  type W : TunnelWriterExt<TW=Self::TW>;
+  type W : TunnelWriterExt;
   // reader must read all three kind of message
   type TR : TunnelReaderNoRep;
 
   /// TunnelProxy
-  type PTW : TunnelWriter + TunnelReaderExt<TR=Self::TR>;
-  /// actual proxy writer : TODO rem like W : directly return writer default impl when stabilized
-  type PW : TunnelWriterExt<TW=Self::PTW>;
+  type PW : TunnelWriterExt + TunnelReaderExt<TR=Self::TR>;
   /// Dest reader
   type DR : TunnelReaderExt<TR=Self::TR>;
   /// could return a writer allowing reply but not mandatory
   /// same for sym info
   fn new_reader (&mut self) -> Self::TR;
-  fn new_tunnel_writer (&mut self, &Self::P) -> Self::TW;
   fn new_writer (&mut self, &Self::P) -> Self::W;
-  // TODO rewrite with Iterator (some bad code due to bad proto)
-  fn new_tunnel_writer_with_route (&mut self, &[&Self::P]) -> Self::TW;
   // TODO rewrite with Iterator
   fn new_writer_with_route (&mut self, &[&Self::P]) -> Self::W;
-  fn new_proxy_writer (&mut self, Self::TR) -> Result<Self::PTW>;
+  fn new_proxy_writer (&mut self, Self::TR) -> Result<Self::PW>;
   fn new_dest_reader (&mut self, Self::TR) -> Result<Self::DR>;
 
 }
@@ -165,8 +158,8 @@ pub trait TunnelNoRep {
 pub trait Tunnel : TunnelNoRep where Self::TR : TunnelReader<RI=Self::RI> {
   // reply info info needed to established conn
   type RI : Info;
-  type RTW : TunnelWriter;
-  fn new_reply_writer (&mut self, &Self::P, &Self::RI) -> Self::RTW;
+  type RW : TunnelWriterExt;
+  fn new_reply_writer (&mut self, &Self::P, &Self::RI) -> Self::RW;
 }
 
 /// tunnel with reply
@@ -174,9 +167,9 @@ pub trait TunnelError : TunnelNoRep where Self::TR : TunnelReaderError<EI=Self::
   // error info info needed to established conn
   type EI : Info;
   /// TODO not a 
-  type ETW : TunnelWriter;
+  type EW : TunnelWriterExt;
 
-  fn new_error_writer (&mut self, &Self::P, &Self::EI) -> Self::ETW;
+  fn new_error_writer (&mut self, &Self::P, &Self::EI) -> Self::EW;
 
 }
 /// Tunnel which allow caching, and thus establishing connections
@@ -222,7 +215,7 @@ pub trait TunnelErrorWriter {
 /// It could be replaced by simple ExtWrite, but smaller methods are used
 pub trait TunnelWriter {
   
-  /// write state when state is needed 
+/*  /// write state when state is needed 
   fn write_state<W : Write>(&mut self, &mut W) -> Result<()>;
 
   /// write connection info, currently use for caching of previous peer connection id (no encrypt
@@ -247,17 +240,18 @@ pub trait TunnelWriter {
 
   /// ExtWrite write end
   fn write_tunnel_end<W : Write>(&mut self, w : &mut W) -> Result<()>;
- 
+*/ 
 }
 
 
 pub trait TunnelReaderNoRep : ExtRead {
 
 
-  fn read_state<R : Read> (&mut self, r : &mut R) -> Result<()>;
+  fn is_dest(&self) -> Option<bool>; 
+/*  fn read_state<R : Read> (&mut self, r : &mut R) -> Result<()>;
   fn read_connect_info<R : Read>(&mut self, &mut R) -> Result<()>;
   fn read_tunnel_header<R : Read>(&mut self, &mut R) -> Result<()>;
-  fn read_dest_info<R : Read>(&mut self, &mut R) -> Result<()>;
+  fn read_dest_info<R : Read>(&mut self, &mut R) -> Result<()>;*/
 }
 
 pub trait TunnelReaderError : TunnelReaderNoRep {

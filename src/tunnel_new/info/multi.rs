@@ -15,8 +15,6 @@ use super::super::{
   RouteProvider,
   SymProvider,
 };
-/// wrong use need redesign TODO redesign it on specific trait (not TW as param)
-use super::super::full::TunnelWriterFull;
 use bincode::SizeLimit;
 use bincode::rustc_serialize::{
   encode_into as bin_encode, 
@@ -206,18 +204,18 @@ impl<P : Peer,SSW,SSR,SP : SymProvider<SSW,SSR,P>,RP : RouteProvider<P>> ReplyPr
      match self.mode {
        MultipleReplyMode::NoHandling => vec![MultipleReplyInfo::NoHandling;l-1],
        MultipleReplyMode::KnownDest => {
-         let mut res = vec![MultipleReplyInfo::NoHandling;route.len()-1];
-         res[l-1] = MultipleReplyInfo::KnownDest(route[0].get_key());
+         let mut res = vec![MultipleReplyInfo::NoHandling;l-1];
+         res[l-2] = MultipleReplyInfo::KnownDest(route[0].get_key());
          res
        },
        MultipleReplyMode::OtherRoute => {
-         let mut res = vec![MultipleReplyInfo::NoHandling;route.len()-1];
-         res[l-1] = MultipleReplyInfo::Route(self.new_sym_key(route[l-1]));
+         let mut res = vec![MultipleReplyInfo::NoHandling;l-1];
+         res[l-2] = MultipleReplyInfo::Route(self.new_sym_key(route[l-1]));
          res
        },
        MultipleReplyMode::Route => {
-         let mut res = vec![MultipleReplyInfo::NoHandling;route.len()-1];
-         res[l-1] = MultipleReplyInfo::Route(self.new_sym_key(route[l-1]));
+         let mut res = vec![MultipleReplyInfo::NoHandling;l-1];
+         res[l-2] = MultipleReplyInfo::Route(self.new_sym_key(route[l-1]));
          res
        },
 

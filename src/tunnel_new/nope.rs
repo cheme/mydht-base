@@ -89,8 +89,8 @@ impl ExtWrite for Nope {
   }
 
   #[inline]
-  fn write_into<W : Write>(&mut self, _ : &mut W, _ : &[u8]) -> Result<usize> {
-    Ok(0)
+  fn write_into<W : Write>(&mut self, _ : &mut W, c : &[u8]) -> Result<usize> {
+    Ok(c.len())
   }
 
   #[inline]
@@ -133,32 +133,11 @@ impl ExtRead for Nope {
 
 
 impl TunnelWriter for Nope {
-  #[inline]
-  fn write_state<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
-  #[inline]
-  fn write_connect_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
-  #[inline]
-  fn write_tunnel_header<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
-  #[inline]
-  fn write_dest_info< W : Write>( &mut self, _ : &mut W) -> Result<()> {
-    unimplemented!()
-  }
-  #[inline]
-  fn write_tunnel_into<W : Write>(&mut self, w : &mut W, cont : &[u8]) -> Result<usize> {Ok(cont.len())}
-  #[inline]
-  fn write_tunnel_all_into<W : Write>(&mut self, w : &mut W, cont : &[u8]) -> Result<()> {Ok(())}
-  #[inline]
-  fn flush_tunnel_into<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
-  #[inline]
-  fn write_tunnel_end<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
-
 }
 
 impl TunnelWriterExt for Nope {
-  type TW = Nope;
-  fn get_writer(&mut self) -> &mut Self::TW {
-    self
-  }
+  #[inline]
+  fn write_dest_info<W : Write>(&mut self, w : &mut W) -> Result<()> {Ok(())}
 }
 impl TunnelErrorWriter for Nope {
   fn write_error<W : Write>(&mut self, _ : &mut W, _ : usize) -> Result<()> {
@@ -166,20 +145,8 @@ impl TunnelErrorWriter for Nope {
   }
 }
 impl TunnelReaderNoRep for Nope {
-  fn read_state<R : Read> (&mut self, _ : &mut R) -> Result<()> {
-    Ok(())
-  }
-  fn read_connect_info<R : Read>(&mut self, _ : &mut R) -> Result<()> {
-    Ok(())
-  }
-  fn read_tunnel_header<R : Read>(&mut self, _ : &mut R) -> Result<()> {
-    Ok(())
-  }
-
-  fn read_dest_info<R : Read>(&mut self, _ : &mut R) -> Result<()> {
-    Ok(())
-  }
- 
+  #[inline]
+  fn is_dest(&self) -> Option<bool> {None}
 }
 
 impl<SSW,SSR> TunnelCache<SSW,SSR> for Nope {
@@ -261,17 +228,13 @@ impl<P : Peer> TunnelNope<P> {
 }
 impl<P : Peer> TunnelNoRep for TunnelNope<P> {
   type P = P;
-  type TW = Nope;
   type W = Nope;
   type TR = Nope;
-  type PTW = Nope;
   type PW = Nope;
   type DR = Nope;
   fn new_reader (&mut self) -> Self::TR { Nope }
-  fn new_tunnel_writer (&mut self, _ : &Self::P) -> Self::TW {Nope}
   fn new_writer (&mut self, _ : &Self::P) -> Self::W {Nope}
-  fn new_tunnel_writer_with_route (&mut self, _ : &[&Self::P]) -> Self::TW {Nope}
   fn new_writer_with_route (&mut self, _ : &[&Self::P]) -> Self::W {Nope}
-  fn new_proxy_writer (&mut self, _ : Self::TR) -> Result<Self::PTW> {Ok(Nope)}
+  fn new_proxy_writer (&mut self, _ : Self::TR) -> Result<Self::PW> {Ok(Nope)}
   fn new_dest_reader (&mut self, _ : Self::TR) -> Result<Self::DR> {Ok(Nope)}
 }

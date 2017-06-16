@@ -137,7 +137,9 @@ impl TunnelWriter for Nope {
 
 impl TunnelWriterExt for Nope {
   #[inline]
-  fn write_dest_info<W : Write>(&mut self, w : &mut W) -> Result<()> {Ok(())}
+  fn write_dest_info_before<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
+  #[inline]
+  fn write_dest_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
 }
 impl TunnelErrorWriter for Nope {
   fn write_error<W : Write>(&mut self, _ : &mut W, _ : usize) -> Result<()> {
@@ -236,5 +238,5 @@ impl<P : Peer> TunnelNoRep for TunnelNope<P> {
   fn new_writer (&mut self, _ : &Self::P) -> Self::W {Nope}
   fn new_writer_with_route (&mut self, _ : &[&Self::P]) -> Self::W {Nope}
   fn new_proxy_writer (&mut self, _ : Self::TR) -> Result<Self::PW> {Ok(Nope)}
-  fn new_dest_reader (&mut self, _ : Self::TR) -> Result<Self::DR> {Ok(Nope)}
+  fn new_dest_reader<R : Read> (&mut self, _ : Self::TR, _ : &mut R) -> Result<Self::DR> {Ok(Nope)}
 }

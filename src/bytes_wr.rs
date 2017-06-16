@@ -229,6 +229,11 @@ impl<P : SizedWindowsParams> ExtRead for SizedWindows<P> {
           } else {
             try!(r.read(&mut buffer[..self.winrem]))
           };
+          if ww ==  0 {
+           error!("read end pading : missing {}",self.winrem);
+           return
+             Err(IoError::new(IoErrorKind::Other, "End read missing padding"));
+          }
           self.winrem -= ww;
         }
 

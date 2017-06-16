@@ -73,7 +73,7 @@ pub enum MultipleReplyMode {
 pub enum MultipleReplyInfo<P : Peer> {
   NoHandling,
   KnownDest(<P as KeyVal>::Key), // TODO add reply mode ??
-  Route(Vec<u8>), // route headers are to be read afterward, contains sym key
+  Route, // route headers are to be read afterward, contains sym key
   /// reply info include in route after content
   RouteReply(Vec<u8>), // route headers are to be read afterward, contains sym key
   CachedRoute(Vec<u8>), // contains symkey for peer shadow
@@ -144,7 +144,7 @@ impl<P : Peer> Info for MultipleReplyInfo<P> {
 impl<P : Peer> RepInfo for MultipleReplyInfo<P> {
   #[inline]
   fn require_additional_payload(&self) -> bool {
-    if let &MultipleReplyInfo::Route(_) = self { true } else {false}
+    if let &MultipleReplyInfo::Route = self { true } else {false}
   }
 
 
@@ -161,8 +161,9 @@ impl<P : Peer> RepInfo for MultipleReplyInfo<P> {
   /// TODO remove called once
   fn get_reply_key(&self) -> Option<&Vec<u8>> {
     match self {
-      &MultipleReplyInfo::RouteReply(ref k) => Some(k),
+ //     &MultipleReplyInfo::RouteReply(ref k) => Some(k),
       &MultipleReplyInfo::CachedRoute(ref k) => Some(k),
+      &MultipleReplyInfo::RouteReply(ref k) => Some(k),
       _ => None,
     }
   }
@@ -170,16 +171,15 @@ impl<P : Peer> RepInfo for MultipleReplyInfo<P> {
 }
 
 /// TODO E as explicit limiter named trait for readability
-pub struct ReplyInfoProvider<P : Peer, SSW,SSR, SP : SymProvider<SSW,SSR,P>, RP : RouteProvider<P>> {
+pub struct ReplyInfoProvider<P : Peer, SSW,SSR, SP : SymProvider<SSW,SSR,P>> {
   pub mode : MultipleReplyMode,
   // for different reply route
   pub symprov : SP,
-  pub routeprov : RP,
   pub _p : PhantomData<(P,SSW,SSR)>,
 }
 
 /// TODO macro inherit??
-impl<P : Peer, SSW,SSR,SP : SymProvider<SSW,SSR,P>,RP : RouteProvider<P>> SymProvider<SSW,SSR,P> for ReplyInfoProvider<P,SSW,SSR,SP,RP> {
+impl<P : Peer, SSW,SSR,SP : SymProvider<SSW,SSR,P>> SymProvider<SSW,SSR,P> for ReplyInfoProvider<P,SSW,SSR,SP> {
 
   #[inline]
   fn new_sym_key (&mut self, p : &P) -> Vec<u8> {
@@ -196,7 +196,7 @@ impl<P : Peer, SSW,SSR,SP : SymProvider<SSW,SSR,P>,RP : RouteProvider<P>> SymPro
 
 }
 
-impl<P : Peer,SSW,SSR,SP : SymProvider<SSW,SSR,P>,RP : RouteProvider<P>> ReplyProvider<P, MultipleReplyInfo<P>,SSW,SSR> for ReplyInfoProvider<P,SSW,SSR,SP,RP> {
+impl<P : Peer,SSW,SSR,SP : SymProvider<SSW,SSR,P>> ReplyProvider<P, MultipleReplyInfo<P>,SSW,SSR> for ReplyInfoProvider<P,SSW,SSR,SP> {
 
   /// Error infos bases for peers
   fn new_reply (&mut self, route : &[&P]) -> Vec<MultipleReplyInfo<P>> {
@@ -210,12 +210,14 @@ impl<P : Peer,SSW,SSR,SP : SymProvider<SSW,SSR,P>,RP : RouteProvider<P>> ReplyPr
        },
        MultipleReplyMode::OtherRoute => {
          let mut res = vec![MultipleReplyInfo::NoHandling;l-1];
-         res[l-2] = MultipleReplyInfo::Route(self.new_sym_key(route[l-1]));
+         res[l-2] = MultipleReplyInfo::Route;
+         //res[l-2] = MultipleReplyInfo::Route(self.new_sym_key(route[l-1]));
          res
        },
        MultipleReplyMode::Route => {
          let mut res = vec![MultipleReplyInfo::NoHandling;l-1];
-         res[l-2] = MultipleReplyInfo::Route(self.new_sym_key(route[l-1]));
+         //res[l-2] = MultipleReplyInfo::Route(self.new_sym_key(route[l-1]));
+         res[l-2] = MultipleReplyInfo::Route;
          res
        },
 

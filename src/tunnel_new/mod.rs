@@ -110,6 +110,7 @@ pub trait ErrorProvider<P : Peer, EI : Info> {
 pub trait ReplyProvider<P : Peer, RI : RepInfo,SSW,SSR> : SymProvider<SSW,SSR,P> {
   /// reply info for dest (last in vec) is different from hop reply info : TODO add new associated type (cf
   /// RepInfo) to avoid mandatory enum on RI.
+  /// Last param is dest symetric key to use for reply (could change)
   fn new_reply (&mut self, &[&P]) -> Vec<RI>;
   //fn new_reply (&mut self, &[&P]) -> (Vec<RI>,RI::replypayload); // reply payload as optional in
   //tunnel shadow instead of Replyinfo in tunnelshadowW
@@ -120,8 +121,10 @@ pub trait TunnelWriterExt : ExtWrite {
 
   // info only for dest (if needed to read)
   fn write_dest_info<W : Write>(&mut self, w : &mut W) -> Result<()>;
+  fn write_dest_info_before<W : Write>(&mut self, w : &mut W) -> Result<()>;
 }
 
+// TODO trait seems really useless : change to ExtRead directly??
 pub trait TunnelReaderExt : ExtRead {
   type TR; 
   /// retrieve original inner writer
@@ -150,16 +153,17 @@ pub trait TunnelNoRep {
   // TODO rewrite with Iterator
   fn new_writer_with_route (&mut self, &[&Self::P]) -> Self::W;
   fn new_proxy_writer (&mut self, Self::TR) -> Result<Self::PW>;
-  fn new_dest_reader (&mut self, Self::TR) -> Result<Self::DR>;
+  fn new_dest_reader<R : Read> (&mut self, Self::TR, &mut R) -> Result<Self::DR>;
 
 }
 
 /// tunnel with reply
 pub trait Tunnel : TunnelNoRep where Self::TR : TunnelReader<RI=Self::RI> {
-  // reply info info needed to established conn
+  // reply info info needed to established conn -> TODO type reply info looks useless : we create reply
+  // writer from reader which contains it
   type RI : Info;
   type RW : TunnelWriterExt;
-  fn new_reply_writer (&mut self, &Self::P, &Self::RI) -> Self::RW;
+  fn new_reply_writer<R : Read, W : Write> (&mut self, Self::DR, &mut R, &mut W) -> Result<Self::RW>;
 }
 
 /// tunnel with reply

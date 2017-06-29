@@ -147,12 +147,13 @@ pub trait TunnelNoRep {
   /// Dest reader
   type DR : TunnelReaderExt<TR=Self::TR>;
   /// could return a writer allowing reply but not mandatory
-  /// same for sym info
-  fn new_reader (&mut self) -> Self::TR;
-  fn new_writer (&mut self, &Self::P) -> Self::W;
-  // TODO rewrite with Iterator
+  /// same for sym info , param is peer from which we read (used in cacheroute)
+  fn new_reader (&mut self, &<Self::P as Peer>::Address) -> Self::TR;
+  // return writer and next peer
+  fn new_writer (&mut self, &Self::P) -> (Self::W, <Self::P as Peer>::Address);
+  // TODO rewrite with Iterator next peer is first of roote
   fn new_writer_with_route (&mut self, &[&Self::P]) -> Self::W;
-  fn new_proxy_writer (&mut self, Self::TR) -> Result<Self::PW>;
+  fn new_proxy_writer (&mut self, Self::TR) -> Result<(Self::PW, <Self::P as Peer>::Address)>;
   fn new_dest_reader<R : Read> (&mut self, Self::TR, &mut R) -> Result<Self::DR>;
 
 }
@@ -163,7 +164,9 @@ pub trait Tunnel : TunnelNoRep where Self::TR : TunnelReader<RI=Self::RI> {
   // writer from reader which contains it
   type RI : Info;
   type RW : TunnelWriterExt;
-  fn new_reply_writer<R : Read, W : Write> (&mut self, Self::DR, &mut R, &mut W) -> Result<Self::RW>;
+  fn new_reply_writer<R : Read> (&mut self, &mut Self::DR, &mut R) -> Result<(Self::RW, <Self::P as Peer>::Address)>;
+  // TODO move in reply writer for shorter need of tunnel ?
+  fn reply_writer_init<R : Read, W : Write> (&mut self, &mut Self::RW, &mut Self::DR, &mut R, &mut W) -> Result<()>;
 }
 
 /// tunnel with reply
@@ -173,7 +176,7 @@ pub trait TunnelError : TunnelNoRep where Self::TR : TunnelReaderError<EI=Self::
   /// TODO not a 
   type EW : TunnelWriterExt;
 
-  fn new_error_writer (&mut self, &Self::P, &Self::EI) -> Self::EW;
+  fn new_error_writer (&mut self, &Self::P, &Self::EI) -> (Self::EW, <Self::P as Peer>::Address);
 
 }
 /// Tunnel which allow caching, and thus establishing connections
@@ -186,9 +189,9 @@ Self::TR : TunnelReader<RI=Self::RI>
   // Shadow Sym (if established con) aka destread
   type SSCR : ExtRead;
 
-  fn put_symw(&mut self, &[u8], Self::SSCW) -> Result<()>;
+  fn put_symw(&mut self, &[u8], Self::SSCW, <Self::P as Peer>::Address) -> Result<()>;
 
-  fn get_symw(&mut self, &[u8]) -> Result<Self::SSCW>;
+  fn get_symw(&mut self, &[u8]) -> Result<(Self::SSCW,<Self::P as Peer>::Address)>;
 
   fn put_symr(&mut self, Self::SSCR) -> Result<Vec<u8>>;
 

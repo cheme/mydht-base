@@ -41,7 +41,7 @@ use std::net::{
   Ipv6Addr,
 };
 
-pub trait Address : Sync + Send + Clone + Debug + Encodable + Decodable + 'static {
+pub trait Address : Eq + Sync + Send + Clone + Debug + Encodable + Decodable + 'static {
 /*  /// for tunnel (otherwhise rust serialize is use on peer)
   fn write_as_bytes<W:Write> (&self, &mut W) -> IoResult<()>;
   /// for tunnel (otherwhise rust serialize is use on peer)

@@ -2,6 +2,8 @@
 //! TODO review all unwrap as most should only return an error, and program could fail very easilly
 use rustc_serialize::{Encodable, Decodable};
 use std::fmt;
+use std::cell::BorrowMutError;
+use std::cell::BorrowError;
 use std::marker::PhantomData;
 use rand::thread_rng;
 use rand::Rng;
@@ -149,6 +151,8 @@ pub trait TunnelNoRep {
   /// could return a writer allowing reply but not mandatory
   /// same for sym info , param is peer from which we read (used in cacheroute)
   fn new_reader (&mut self, &<Self::P as Peer>::Address) -> Self::TR;
+  /// try to init dest (use for cache info)
+  fn init_dest(&mut self, &mut Self::TR) -> Result<()>;
   // return writer and next peer
   fn new_writer (&mut self, &Self::P) -> (Self::W, <Self::P as Peer>::Address);
   // TODO rewrite with Iterator next peer is first of roote
@@ -293,6 +297,22 @@ impl From<BincErr> for IoError {
     IoError::new(IoErrorKind::Other, e.0)
   }
 }
+pub struct BorrMutErr(BorrowMutError);
+impl From<BorrMutErr> for IoError {
+  #[inline]
+  fn from(e : BorrMutErr) -> IoError {
+    IoError::new(IoErrorKind::Other, e.0)
+  }
+}
+pub struct BorrErr(BorrowError);
+impl From<BorrErr> for IoError {
+  #[inline]
+  fn from(e : BorrErr) -> IoError {
+    IoError::new(IoErrorKind::Other, e.0)
+  }
+}
+
+
 pub struct BindErr(BindError);
 impl From<BindErr> for IoError {
   #[inline]

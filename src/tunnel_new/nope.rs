@@ -20,6 +20,8 @@ use super::{
   TunnelWriterExt,
   TunnelReaderExt,
   TunnelCache,
+  TunnelCacheErr,
+  CacheIdProducer,
   TunnelErrorWriter,
   TunnelReader,
   TunnelReaderNoRep,
@@ -47,6 +49,12 @@ pub struct Nope;
 
 
 impl Info for Nope {
+
+  #[inline]
+  fn do_cache (&self) -> bool {
+    false
+  }
+
   #[inline]
   fn write_in_header<W : Write>(&mut self, w : &mut W) -> Result<()> {
     Ok(())
@@ -71,11 +79,6 @@ impl RepInfo for Nope {
   fn require_additional_payload(&self) -> bool {
     false
   }
-  #[inline]
-  fn do_cache (&self) -> bool {
-    false
-  }
-
   #[inline]
   fn get_reply_key(&self) -> Option<&Vec<u8>> {
     None
@@ -142,15 +145,45 @@ impl TunnelWriterExt for Nope {
   fn write_dest_info<W : Write>(&mut self, _ : &mut W) -> Result<()> {Ok(())}
 }
 impl TunnelErrorWriter for Nope {
-  fn write_error<W : Write>(&mut self, _ : &mut W, _ : usize) -> Result<()> {
+  fn write_error<W : Write>(&mut self, _ : &mut W) -> Result<()> {
     Ok(())
   }
 }
 impl TunnelReaderNoRep for Nope {
   #[inline]
   fn is_dest(&self) -> Option<bool> {None}
+  #[inline]
+  fn is_err(&self) -> Option<bool> {None}
+
 }
 
+impl CacheIdProducer for Nope {
+  fn new_cache_id (&mut self) -> Vec<u8> {
+    Vec::new()
+  }
+}
+
+impl<EW,EI> TunnelCacheErr<EW,EI> for Nope {
+  fn put_errw_tunnel(&mut self, _ : &[u8], _ : EW) -> Result<()> {
+    // TODO replace with actual erro
+    unimplemented!()
+  }
+  fn get_errw_tunnel(&mut self, _ : &[u8]) -> Result<&mut EW> {
+    // TODO replace with actual erro
+    unimplemented!()
+  }
+  fn put_errr_tunnel(&mut self, _ : &[u8], _ : Vec<EI>) -> Result<()> {
+   // TODO replace with actual erro
+    unimplemented!()
+  }
+  
+  fn get_errr_tunnel(&mut self, _ : &[u8]) -> Result<&[EI]> {
+   // TODO replace with actual erro
+    unimplemented!()
+  }
+  
+ 
+}
 impl<SSW,SSR> TunnelCache<SSW,SSR> for Nope {
   fn put_symw_tunnel(&mut self, _ : &[u8], _ : SSW) -> Result<()> {
     // TODO replace with actual erro
@@ -160,6 +193,7 @@ impl<SSW,SSR> TunnelCache<SSW,SSR> for Nope {
     // TODO replace with actual erro
     unimplemented!()
   }
+
   fn has_symw_tunnel(&mut self, _ : &[u8]) -> bool {
     false
   }
@@ -174,9 +208,6 @@ impl<SSW,SSR> TunnelCache<SSW,SSR> for Nope {
   }
   fn has_symr_tunnel(&mut self, _ : &[u8]) -> bool {
     false
-  }
-  fn new_cache_id (&mut self) -> Vec<u8> {
-    vec![]
   }
 }
 // TODO remove as only for dev progress

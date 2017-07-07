@@ -77,15 +77,14 @@ pub trait Info : Sized {
   /// for each peer read from header
   fn read_from_header<R : Read>(r : &mut R) -> Result<Self>;
   fn read_read_info<R : Read>(&mut self, r : &mut R) -> Result<()>;
-
-}
-
-pub trait RepInfo : Info {
   /// if it retun true, there is a need to cache
   /// this info for reply or error routing
   /// If we need cache, reply info must be kept by using a reply key
   fn do_cache (&self) -> bool;
 
+}
+
+pub trait RepInfo : Info {
   fn get_reply_key(&self) -> Option<&Vec<u8>>;
   /// additional writing after content (clear bytes), related to routing scheme
   fn require_additional_payload(&self) -> bool;
@@ -166,7 +165,7 @@ pub trait TunnelNoRep {
 pub trait Tunnel : TunnelNoRep where Self::TR : TunnelReader<RI=Self::RI> {
   // reply info info needed to established conn -> TODO type reply info looks useless : we create reply
   // writer from reader which contains it
-  type RI : Info;
+  type RI : Info; // RI and EI in TunnelError seems useless in this trait except pfor tunnelreader
   type RW : TunnelWriterExt;
   fn new_reply_writer<R : Read> (&mut self, &mut Self::DR, &mut R) -> Result<(Self::RW, <Self::P as Peer>::Address)>;
   // TODO move in reply writer for shorter need of tunnel ?
@@ -177,15 +176,19 @@ pub trait Tunnel : TunnelNoRep where Self::TR : TunnelReader<RI=Self::RI> {
 pub trait TunnelError : TunnelNoRep where Self::TR : TunnelReaderError<EI=Self::EI> {
   // error info info needed to established conn
   type EI : Info;
-  /// TODO not a 
-  type EW : TunnelWriterExt;
+  type EW : TunnelErrorWriter; // not an extwrite (use reply writer instead if need : error is lighter and content should be include in error writer
 
-  fn new_error_writer (&mut self, &Self::P, &Self::EI) -> (Self::EW, <Self::P as Peer>::Address);
-
+  fn new_error_writer (&mut self, &mut Self::TR) -> Result<(Self::EW, <Self::P as Peer>::Address)>;
+  fn proxy_error_writer (&mut self, &mut Self::TR) -> Result<(Self::EW, <Self::P as Peer>::Address)>;
+  /// return error peer ix or error (or 0) if unresolved
+  fn read_error(&mut self, &mut Self::TR) -> Result<usize>;
+}
+pub trait CacheIdProducer {
+  fn new_cache_id (&mut self) -> Vec<u8>;
 }
 /// Tunnel which allow caching, and thus establishing connections
 /// TODO understand need for where condition
-pub trait TunnelManager : Tunnel where Self::RI : RepInfo,
+pub trait TunnelManager : Tunnel + CacheIdProducer where Self::RI : RepInfo,
 Self::TR : TunnelReader<RI=Self::RI>
 {
   // Shadow Sym (if established con)
@@ -201,6 +204,7 @@ Self::TR : TunnelReader<RI=Self::RI>
 
   fn get_symr(&mut self, &[u8]) -> Result<Self::SSCR>;
 
+
   fn use_sym_exchange (&Self::RI) -> bool;
 
   // first vec is sym key, second is cache id of previous peer
@@ -208,7 +212,20 @@ Self::TR : TunnelReader<RI=Self::RI>
 
   fn new_dest_sym_reader (&mut self, Vec<Vec<u8>>) -> Self::SSCR;
 
-  fn new_cache_id (&mut self) -> Vec<u8>;
+
+}
+// TODO need for where ??
+pub trait TunnelManagerError : TunnelError + CacheIdProducer where  Self::EI : Info,
+Self::TR : TunnelReaderError<EI = Self::EI>
+{
+
+  fn put_errw(&mut self, &[u8], Self::EW, <Self::P as Peer>::Address) -> Result<()>;
+
+  fn get_errw(&mut self, &[u8]) -> Result<(Self::EW,<Self::P as Peer>::Address)>;
+
+  fn put_errr(&mut self, &[u8], Vec<Self::EI>) -> Result<()>;
+
+  fn get_errr(&mut self, &[u8]) -> Result<&[Self::EI]>;
 
 }
  
@@ -216,9 +233,10 @@ Self::TR : TunnelReader<RI=Self::RI>
 /// Otherwhise Reply mechanism should be use for ack or error
 pub trait TunnelErrorWriter {
 
-  fn write_error<W : Write>(&mut self, &mut W, usize) -> Result<()>;
+  fn write_error<W : Write>(&mut self, &mut W) -> Result<()>;
 
 }
+
 
 /// TODO some fn might be useless : check it later
 /// TODO rename to tunnel serializer??
@@ -259,6 +277,7 @@ pub trait TunnelReaderNoRep : ExtRead {
 
 
   fn is_dest(&self) -> Option<bool>; 
+  fn is_err(&self) -> Option<bool>; 
 /*  fn read_state<R : Read> (&mut self, r : &mut R) -> Result<()>;
   fn read_connect_info<R : Read>(&mut self, &mut R) -> Result<()>;
   fn read_tunnel_header<R : Read>(&mut self, &mut R) -> Result<()>;
@@ -336,9 +355,24 @@ pub trait TunnelCache<SSW,SSR> {
   fn has_symr_tunnel(&mut self, k : &[u8]) -> bool {
     self.get_symr_tunnel(k).is_ok()
   }
-  fn new_cache_id (&mut self) -> Vec<u8>;
 
 }
+pub trait TunnelCacheErr<EW,EI> {
+  fn put_errw_tunnel(&mut self, &[u8], EW) -> Result<()>;
+  fn get_errw_tunnel(&mut self, &[u8]) -> Result<&mut EW>;
+  fn has_errw_tunnel(&mut self, k : &[u8]) -> bool {
+    self.get_errw_tunnel(k).is_ok()
+  }
+
+
+  fn put_errr_tunnel(&mut self, &[u8], Vec<EI>) -> Result<()>;
+  fn get_errr_tunnel(&mut self, &[u8]) -> Result<&[EI]>;
+  fn has_errr_tunnel(&mut self, k : &[u8]) -> bool {
+    self.get_errr_tunnel(k).is_ok()
+  }
+
+}
+
 
 /// TODO move with generic traits from full (should not be tunnel main module component
 /// TODO add Peer as param ? old impl got its w/r from peer

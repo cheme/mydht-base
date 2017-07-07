@@ -19,9 +19,9 @@ pub enum TunnelState {
   ReplyOnce,
   /// info are cached, can be use by emitter after QueryCached (same as transfer cached)
   ReplyCached,
-  /// Error are only for query, as error for reply could not be emit again (dest do not know origin
-  /// of query (otherwhise use NoRepTunnel and only send Query).
-  QError,
+ // Error are only for query, as error for reply could not be emit again (dest do not know origin
+ // of query (otherwhise use NoRepTunnel and only send Query).
+//  QError
   /// same as QError but no route just tcid, and error is send as xor of previous with ours.
   QErrorCached,
 //  Query(usize), // nb of query possible TODO for reuse 

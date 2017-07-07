@@ -95,7 +95,16 @@ pub enum MultipleReplyInfo<P : Peer> {
 }*/
 
 impl<P : Peer> Info for MultipleReplyInfo<P> {
-  
+
+  #[inline]
+  fn do_cache (&self) -> bool {
+    match self {
+      &MultipleReplyInfo::CachedRoute(_) => true,
+      _ => false,
+    }
+  }
+
+
 
   fn write_in_header<W : Write>(&mut self, inw : &mut W) -> Result<()> {
     bin_encode(self, inw, SizeLimit::Infinite).map_err(|e|BincErr(e))?;
@@ -147,16 +156,6 @@ impl<P : Peer> RepInfo for MultipleReplyInfo<P> {
     if let &MultipleReplyInfo::Route = self { true } else {false}
   }
 
-
-  /// TODO consider remove
-  #[inline]
-  fn do_cache (&self) -> bool {
-    match self {
-      &MultipleReplyInfo::CachedRoute(_) => true,
-      _ => false,
-    }
-
-  }
 
   /// TODO remove called once
   fn get_reply_key(&self) -> Option<&Vec<u8>> {
@@ -285,6 +284,7 @@ impl<P : Peer,SSW,SSR> ReplyProvider<P, MultipleReplyInfo<P>,SSW,SSR> for NoMult
     vec![MultipleReplyInfo::NoHandling;p.len()-1]
   }
 }
+
 impl<P : Peer, SSW,SSR> SymProvider<SSW,SSR,P> for NoMultiRepProvider {
   fn new_sym_key (&mut self, _ : &P) -> Vec<u8> {
     unimplemented!()

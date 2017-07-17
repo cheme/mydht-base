@@ -1,5 +1,6 @@
 use super::{
   KVCache,
+  Cache,
   inner_cache_bv_rand,
 };
 use mydhtresult::Result;
@@ -56,7 +57,7 @@ impl<K, V, C : KVCache<K,V>> RandCache<K, V, C> {
   }
 }
 
-impl<K,V, C : KVCache<K,V>> KVCache<K, V> for RandCache<K,V,C> {
+impl<K,V, C : KVCache<K,V>> Cache<K, V> for RandCache<K,V,C> {
 
   fn add_val_c(& mut self, k: K, v: V) {
     self.cache.add_val_c(k,v)
@@ -67,12 +68,16 @@ impl<K,V, C : KVCache<K,V>> KVCache<K, V> for RandCache<K,V,C> {
   fn has_val_c<'a>(&'a self, k : &K) -> bool {
     self.cache.has_val_c(k)
   }
-  fn update_val_c<F>(& mut self, k : &K, f : F) -> Result<bool> where F : FnOnce(& mut V) -> Result<()> {
-    self.cache.update_val_c(k,f)
-  }
   fn remove_val_c(& mut self, k : &K) -> Option<V> {
     self.cache.remove_val_c(k)
   }
+
+}
+impl<K,V, C : KVCache<K,V>> KVCache<K, V> for RandCache<K,V,C> {
+  fn update_val_c<F>(& mut self, k : &K, f : F) -> Result<bool> where F : FnOnce(& mut V) -> Result<()> {
+    self.cache.update_val_c(k,f)
+  }
+
   fn strict_fold_c<'a, B, F>(&'a self, init: B, f: F) -> B where F: Fn(B, (&'a K, &'a V)) -> B, K : 'a, V : 'a {
     self.cache.strict_fold_c(init,f)
   }

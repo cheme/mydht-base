@@ -10,9 +10,9 @@ use rand::Rng;
 use bit_vec::BitVec;
 
 pub mod rand_cache;
-/// cache base trait to use in storage (transient or persistant) relative implementations
-pub trait KVCache<K, V> : Sized {
 
+/// cache base trait to use in storage (transient or persistant) relative implementations
+pub trait Cache<K, V> {
   /// Add value, pair is boolean for do persistent local store, and option for do cache value for
   /// CachePolicy duration TODO ref to key (key are clone)
   fn add_val_c(& mut self, K, V);
@@ -21,13 +21,16 @@ pub trait KVCache<K, V> : Sized {
   fn has_val_c<'a>(&'a self, k : &K) -> bool {
     self.get_val_c(k).is_some()
   }
+
+  /// Remove value
+  fn remove_val_c(& mut self, &K) -> Option<V>;
+}
+/// cache base trait to use in storage (transient or persistant) relative implementations
+pub trait KVCache<K, V> : Sized + Cache<K,V> {
   /// update value, possibly inplace (depending upon impl (some might just get value modify it and
   /// set it again)), return true if update effective
   fn update_val_c<F>(& mut self, &K, f : F) -> Result<bool> where F : FnOnce(& mut V) -> Result<()>;
  
-  /// Remove value
-  fn remove_val_c(& mut self, &K) -> Option<V>;
-
   /// fold without closure over all content
   fn strict_fold_c<'a, B, F>(&'a self, init: B, f: F) -> B where F: Fn(B, (&'a K, &'a V)) -> B, K : 'a, V : 'a;
   /// very permissive fold (allowing closure)
@@ -178,7 +181,7 @@ fn inner_cache_bv_rand<'a,K, V, C : KVCache<K,V>, F : Fn(&V) -> bool> (c : &'a C
  
 pub struct NoCache<K,V>(PhantomData<(K,V)>);
 
-impl<K,V> KVCache<K,V> for NoCache<K,V> {
+impl<K,V> Cache<K,V> for NoCache<K,V> {
   //type I = ();
   fn add_val_c(& mut self, _ : K, _ : V) {
     ()
@@ -186,11 +189,15 @@ impl<K,V> KVCache<K,V> for NoCache<K,V> {
   fn get_val_c<'a>(&'a self, _ : &K) -> Option<&'a V> {
     None
   }
-  fn update_val_c<F>(&mut self, _ : &K, _ : F) -> Result<bool> where F : FnOnce(&mut V) -> Result<()> {
-    Ok(false)
-  }
+
   fn remove_val_c(&mut self, _ : &K) -> Option<V> {
     None
+  }
+
+}
+impl<K,V> KVCache<K,V> for NoCache<K,V> {
+  fn update_val_c<F>(&mut self, _ : &K, _ : F) -> Result<bool> where F : FnOnce(&mut V) -> Result<()> {
+    Ok(false)
   }
   fn strict_fold_c<'a, B, F>(&'a self, init: B, _: F) -> B where F: Fn(B, (&'a K, &'a V)) -> B, K : 'a, V : 'a {
     init
@@ -208,8 +215,7 @@ impl<K,V> KVCache<K,V> for NoCache<K,V> {
     NoCache(PhantomData)
   }
 }
-
-impl<K: Hash + Eq, V> KVCache<K,V> for HashMap<K,V> {
+impl<K: Hash + Eq, V> Cache<K,V> for HashMap<K,V> {
   fn add_val_c(& mut self, key : K, val : V) {
     self.insert(key, val);
   }
@@ -222,6 +228,15 @@ impl<K: Hash + Eq, V> KVCache<K,V> for HashMap<K,V> {
     self.contains_key(key)
   }
 
+  fn remove_val_c(& mut self, key : &K) -> Option<V> {
+    self.remove(key)
+  }
+
+}
+impl<K: Hash + Eq, V> KVCache<K,V> for HashMap<K,V> {
+  fn new() -> Self {
+    HashMap::new()
+  }
   fn update_val_c<F>(&mut self, k : &K, f : F) -> Result<bool> where F : FnOnce(&mut V) -> Result<()> {
     if let Some(x) = self.get_mut(k) {
       try!(f(x));
@@ -229,13 +244,6 @@ impl<K: Hash + Eq, V> KVCache<K,V> for HashMap<K,V> {
     } else {
       Ok(false)
     }
-  }
-  fn remove_val_c(& mut self, key : &K) -> Option<V> {
-    self.remove(key)
-  }
-
-  fn new() -> Self {
-    HashMap::new()
   }
 
   fn len_c (& self) -> usize {

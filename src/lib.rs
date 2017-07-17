@@ -257,7 +257,5 @@ pub mod query;
 pub mod procs;
 pub mod rules;
 pub mod route;
-pub mod tunnel;
-pub mod tunnel_new;
 pub mod bytes_wr;
 

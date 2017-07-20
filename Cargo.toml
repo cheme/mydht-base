@@ -11,6 +11,7 @@ openssl-impl = ["openssl"]
 mio-impl = ["mio","coroutine"]
 rust-crypto-impl = ["rust-crypto"]
 with-extra-test = []
+tunnel-impl = ["tunnel"]
 nightly = []
 
 [dependencies]
@@ -26,11 +27,16 @@ byteorder = "0.4.2"
 #bit-vec = "0.4.2"
 #vec_map = "0.6.0"
 
+[dependencies.tunnel]
+#git = "https://github.com/cheme/tunnel.git"
+path = "../../tunnel/"
+optional = true
+
 [dependencies.bit-vec]
 git = "https://github.com/cheme/bit-vec.git"
 
 [dependencies.readwrite-comp]
-path = "../readwrite-comp/"
+path = "../../readwrite-comp/"
 #git = "https://github.com/cheme/readwrite-comp.git"
 
 [dependencies.mio]
